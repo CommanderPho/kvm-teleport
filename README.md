@@ -310,44 +310,143 @@ nix develop
 <details>
     <summary>Windows</summary>
 
-- First install [Rust](https://www.rust-lang.org/tools/install).
+Build Mousehop on Windows with the MSVC toolchain and a GTK 4 + Libadwaita stack from
+[gvsbuild](https://github.com/wingtk/gvsbuild). Official gtk-rs notes:
+[gtk-rs.org installation (Windows)](https://gtk-rs.org/gtk4-rs/stable/latest/book/installation_windows.html).
 
-- Then follow the instructions at [gtk-rs.org](https://gtk-rs.org/gtk4-rs/stable/latest/book/installation_windows.html)
+#### 1. Prerequisites
 
-*TLDR:*
+- [Rustup](https://www.rust-lang.org/tools/install) / MSVC host (`rustup default stable-msvc`).
+  Admin PowerShell if needed: `winget install Rustlang.Rustup`
+- [Python 3](https://www.python.org/downloads/) on `PATH` (needed for gvsbuild)
+- [Git for Windows](https://gitforwindows.org/)
+- [MSYS2](https://www.msys2.org/) at `C:\msys64` (`winget install MSYS2.MSYS2`)
+- Visual Studio **2022** or **2026** with **Desktop development with C++**
+  (Community / Professional / Build Tools all work)
+- Optional: [uv](https://docs.astral.sh/uv/) for installing gvsbuild (`uv tool install gvsbuild`)
 
-Build gtk from source
+#### 2. Install gvsbuild and build GTK + Libadwaita
 
-- The following commands should be run in an **admin power shell** instance:
-```sh
-# install chocolatey
-Set-ExecutionPolicy Bypass -Scope Process -Force; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+Do this in a **regular** PowerShell. Prefer a working directory **outside** this repo
+(for example `C:\gtk-build`). Mousehop pins Rust via `rust-toolchain.toml`; if
+gvsbuild runs inside the checkout, that pin can break `cargo install cargo-c` while
+building `librsvg`.
 
-# install gvsbuild dependencies
-choco install python git msys2 visualstudio2022-workload-vctools
+```powershell
+# Recommended: matches CI until a gvsbuild release includes the cargo-c PATH fix
+# https://github.com/wingtk/gvsbuild/pull/1803
+py -m pip install --user git+https://github.com/wingtk/gvsbuild.git@6e67071890322a58d4d14ccd9fc4a61cc8494006
+
+# Ensure Python Scripts (gvsbuild.exe) is on PATH, then open a new PowerShell if needed.
+# Or: uv tool install gvsbuild
+
+# Use the VS edition you have. gvsbuild defaults to vs2022; VS 2026 needs --vs-ver vs2026.
+# Cold build can take a long time. Output lands in C:\gtk-build\gtk\x64\release
+Set-Location C:\gtk-build
+gvsbuild build --vs-ver vs2026 --msys-dir=C:\msys64 --configuration release gtk4 libadwaita
 ```
 
-- The following commands should be run in a **regular power shell** instance:
+Release packaging also builds `librsvg` (SVG tray icon). CI builds `gtk4` +
+`libadwaita` only; that is enough to compile. To match the release zip deps:
 
-```sh
-# install gvsbuild with python
-python -m pip install --user pipx
-python -m pipx ensurepath
+```powershell
+gvsbuild build --vs-ver vs2026 --msys-dir=C:\msys64 --configuration release gtk4 libadwaita librsvg
 ```
 
-- Relaunch your powershell instance so the changes in the environment are reflected.
-```sh
-pipx install gvsbuild
+**Incremental / missing Libadwaita only.** If `gtk4` is already installed under
+`C:\gtk-build\gtk\x64\release` but `libadwaita-1.pc` is missing (Cargo fails with
+`pkg-config` / `libadwaita-1`):
 
-# build gtk + libadwaita
-gvsbuild build gtk4 libadwaita librsvg adwaita-icon-theme
+```powershell
+Set-Location C:\gtk-build
+gvsbuild build --vs-ver vs2026 --msys-dir=C:\msys64 --configuration release --no-deps --fast-build libadwaita
 ```
 
-- **Make sure to add the directory** `C:\gtk-build\gtk\x64\release\bin`
-[**to the `PATH` environment variable**]((https://learn.microsoft.com/en-us/previous-versions/office/developer/sharepoint-2010/ee537574(v=office.14))). Otherwise the project will fail to build.
+**`librsvg` failures**
 
-To avoid building GTK from source, it is possible to disable
-the gtk frontend (see conditional compilation).
+- **Rust toolchain pin:** run gvsbuild from outside the Mousehop checkout (see above),
+  or temporarily unset `RUSTUP_TOOLCHAIN` / move out of the directory that contains
+  `rust-toolchain.toml`.
+- **Git shadowing MSYS2:** if Meson picks Git's `usr\bin` tools instead of MSYS2,
+  temporarily rename `C:\Program Files\Git\usr\bin` and `C:\Program Files\Git\bin`
+  (admin shell), re-run gvsbuild, then restore those folders (same workaround CI uses).
+
+Confirm the stack before building Mousehop:
+
+```powershell
+Test-Path C:\gtk-build\gtk\x64\release\lib\pkgconfig\gtk4.pc
+Test-Path C:\gtk-build\gtk\x64\release\lib\pkgconfig\libadwaita-1.pc
+& C:\gtk-build\gtk\x64\release\bin\pkgconf.exe --modversion libadwaita-1
+```
+
+#### 3. Environment variables
+
+Set these as [user environment variables](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_environment_variables),
+then open a **new** PowerShell (or IDE terminal):
+
+| Variable | Value |
+| --- | --- |
+| `Path` (prepend) | `C:\gtk-build\gtk\x64\release\bin` |
+| `PKG_CONFIG` | `C:\gtk-build\gtk\x64\release\bin\pkgconf.exe` |
+| `PKG_CONFIG_PATH` | `C:\gtk-build\gtk\x64\release\lib\pkgconfig` |
+| `Lib` (prepend or create) | `C:\gtk-build\gtk\x64\release\lib` |
+
+Persist from PowerShell:
+
+```powershell
+$gtkBin = "C:\gtk-build\gtk\x64\release\bin"
+$gtkLib = "C:\gtk-build\gtk\x64\release\lib"
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if ($userPath -notlike "*$gtkBin*") {
+    [Environment]::SetEnvironmentVariable("Path", "$gtkBin;$userPath", "User")
+}
+[Environment]::SetEnvironmentVariable("PKG_CONFIG", "$gtkBin\pkgconf.exe", "User")
+[Environment]::SetEnvironmentVariable("PKG_CONFIG_PATH", "$gtkLib\pkgconfig", "User")
+$userLib = [Environment]::GetEnvironmentVariable("Lib", "User")
+if (-not $userLib) {
+    [Environment]::SetEnvironmentVariable("Lib", $gtkLib, "User")
+} elseif ($userLib -notlike "*gtk-build*") {
+    [Environment]::SetEnvironmentVariable("Lib", "$gtkLib;$userLib", "User")
+}
+```
+
+Session-only alternative (current shell only):
+
+```powershell
+$env:Path = "C:\gtk-build\gtk\x64\release\bin;$env:Path"
+$env:PKG_CONFIG = "C:\gtk-build\gtk\x64\release\bin\pkgconf.exe"
+$env:PKG_CONFIG_PATH = "C:\gtk-build\gtk\x64\release\lib\pkgconfig"
+$env:Lib = "C:\gtk-build\gtk\x64\release\lib;$env:Lib"
+```
+
+#### 4. Build Mousehop
+
+From the repo root:
+
+```powershell
+cargo build --workspace
+# or
+cargo build -p mousehop --release
+```
+
+`target\release\mousehop.exe` (and the debug build) need the GTK DLLs from
+`C:\gtk-build\gtk\x64\release\bin` on `PATH`, or copied next to the exe (as the
+release zip does).
+
+Verify:
+
+```powershell
+cargo test --workspace
+```
+
+To skip the GTK frontend and avoid needing the GTK stack:
+
+```powershell
+cargo build -p mousehop --no-default-features --release
+```
+
+(`cargo build --workspace --no-default-features` still compiles the `mousehop-gtk`
+workspace member, so prefer `-p mousehop` when omitting GTK.)
 </details>
 
 ## Usage
