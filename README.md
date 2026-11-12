@@ -229,7 +229,30 @@ The `pre-commit` script runs `cargo fmt --all` (and fails if files were modified
 ```sh
 # Install dependencies
 brew install libadwaita pkg-config imagemagick
-cargo install cargo-bundle
+```
+
+`cargo install cargo-bundle` for **0.12.0** currently fails to compile (`sigstore` 0.14.0 hits `E0283` when `hybrid-array` is in the graph). Until upstream bumps the dep, install a patched copy that uses `sigstore` 0.15.0:
+
+```sh
+tmpdir=$(mktemp -d)
+cd "$tmpdir"
+curl -sL https://static.crates.io/crates/cargo-bundle/cargo-bundle-0.12.0.crate | tar xz
+cd cargo-bundle-0.12.0
+python3 - <<'PY'
+from pathlib import Path
+p = Path("Cargo.toml")
+text = p.read_text()
+old = '[dependencies.sigstore]\nversion = "0.14.0"'
+new = '[dependencies.sigstore]\nversion = "0.15.0"'
+if old not in text:
+    raise SystemExit("sigstore 0.14.0 pin not found; crate may already be fixed")
+p.write_text(text.replace(old, new, 1))
+print("bumped sigstore -> 0.15.0")
+PY
+cargo install --path . --force
+```
+
+```sh
 # Create the macOS icon file
 scripts/makeicns.sh
 # Create the .app bundle
