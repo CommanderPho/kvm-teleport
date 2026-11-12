@@ -114,7 +114,12 @@ name = "Mousehop"
 # cargo-bundle's resource_relpath, so `menubar-template.png` lands at
 # `Resources/_up_/target/...`. `scripts/copy-macos-dylib.sh` flattens
 # it back to the Resources root so NSBundle pathForResource: finds it.
+#
+# cargo-bundle >= 0.12 nests macOS-only keys under `[package.metadata.bundle.osx]`
+# (the old top-level `osx_info_plist_exts` field is rejected).
 icon = ["../target/icon.icns"]
 identifier = "com.mousehop.Mousehop"
-osx_info_plist_exts = ["../build-aux/macos-lsui-element.plist"]
 resources = ["../target/menubar-template.png"]
+
+[package.metadata.bundle.osx]
+info_plist_exts = ["../build-aux/macos-lsui-element.plist"]

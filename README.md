@@ -226,17 +226,47 @@ The `pre-commit` script runs `cargo fmt --all` (and fails if files were modified
 <details>
     <summary>MacOS</summary>
 
+Match the Rust host to your Homebrew prefix. On Apple Silicon use `/opt/homebrew` with an `aarch64-apple-darwin` toolchain (avoid a Rosetta/`x86_64` shell linking against arm64 dylibs, or `/usr/local` Intel Homebrew mixed into `PATH`/`PKG_CONFIG_PATH`). On Intel Macs use `/usr/local` with `x86_64-apple-darwin`.
+
 ```sh
-# Install dependencies
-brew install libadwaita pkg-config imagemagick
-cargo install cargo-bundle
-# Create the macOS icon file
-scripts/makeicns.sh
-# Create the .app bundle
-cargo bundle
-# Copy all dynamic libraries into the bundle, and update the bundle to find them there
-scripts/copy-macos-dylib.sh
+# Install dependencies (librsvg provides rsvg-convert for the icon script;
+# libgit2 is required by the mousehop build script / shadow-rs)
+brew install gtk4 libadwaita pkg-config imagemagick librsvg libgit2
 ```
+
+`cargo install cargo-bundle` for **0.12.0** currently fails to compile (`sigstore` 0.14.0 hits `E0283` when `hybrid-array` is in the graph). Until upstream bumps the dep, install a patched copy that uses `sigstore` 0.15.0:
+
+```sh
+tmpdir=$(mktemp -d)
+cd "$tmpdir"
+curl -sL https://static.crates.io/crates/cargo-bundle/cargo-bundle-0.12.0.crate | tar xz
+cd cargo-bundle-0.12.0
+python3 - <<'PY'
+from pathlib import Path
+p = Path("Cargo.toml")
+text = p.read_text()
+old = '[dependencies.sigstore]\nversion = "0.14.0"'
+new = '[dependencies.sigstore]\nversion = "0.15.0"'
+if old not in text:
+    raise SystemExit("sigstore 0.14.0 pin not found; crate may already be fixed")
+p.write_text(text.replace(old, new, 1))
+print("bumped sigstore -> 0.15.0")
+PY
+cargo install --path . --force
+```
+
+`rust-toolchain.toml` pins Rust **1.95.0**. Build the `.app` from the `mousehop/` crate directory so cargo-bundle resolves the icon, menu-bar template, and `osx.info_plist_exts` globs against that CWD (running from the workspace root silently drops them):
+
+```sh
+# Create the macOS icon + menu-bar template under target/
+scripts/makeicns.sh
+# Create the .app bundle (release)
+(cd mousehop && cargo bundle --release)
+# Vendor Homebrew dylibs into the bundle, flatten the menu-bar PNG, ad-hoc sign
+scripts/copy-macos-dylib.sh target/release/bundle/osx/Mousehop.app/Contents/MacOS/mousehop
+```
+
+The finished app is at `target/release/bundle/osx/Mousehop.app`.
 </details>
 
 <details>
