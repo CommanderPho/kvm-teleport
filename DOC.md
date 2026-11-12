@@ -1,5 +1,14 @@
 # General Software Architecture
 
+## Shared spatial layout
+
+See [SHARED_LAYOUT.md](SHARED_LAYOUT.md) for the Teleport-style per-monitor
+workspace model, authority/sync rules, protocol capability
+`CAP_SHARED_WORKSPACE`, and Win/macOS capture arming. Legacy whole-desktop
+`Position` placement remains the default when `workspace.toml` is absent or a
+peer lacks the capability.
+
+
 ## Events
 
 Each instance of mousehop can emit and receive events, where

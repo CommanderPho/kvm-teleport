@@ -343,6 +343,21 @@ impl InputCaptureState {
         let relative_x = event.get_double_value_field(EventField::MOUSE_EVENT_DELTA_X);
         let relative_y = event.get_double_value_field(EventField::MOUSE_EVENT_DELTA_Y);
 
+        // Prefer explicitly armed spatial routes (including inward-facing
+        // edges). Fall back to the legacy outer contour for Position clients.
+        let prev = (
+            (location.x - relative_x).round() as i32,
+            (location.y - relative_y).round() as i32,
+        );
+        let curr = (location.x.round() as i32, location.y.round() as i32);
+        let armed = crate::spatial::current_armed_routes();
+        if let Some(route) = crate::spatial::crossed_armed_route(&armed, prev, curr) {
+            if self.active_clients.contains(&route.position) {
+                log::debug!("Crossed spatial route into position: {:?}", route.position);
+                return Some(route.position);
+            }
+        }
+
         for &position in self.active_clients.iter() {
             if crosses_display_contour(
                 &self.display_layout,
@@ -1184,9 +1199,14 @@ fn create_event_tap<'a>(
                     // the currently-held per-side modifier device bits on it.
                     // Emit this snapshot immediately after Begin so modifiers
                     // held before crossing are represented on the peer too.
+                    let outbound = crate::spatial::current_armed_routes()
+                        .iter()
+                        .find(|r| r.position == new_pos)
+                        .map(|r| r.outbound());
                     res_events.push(CaptureEvent::Begin {
                         cursor,
                         normalized_cursor,
+                        outbound,
                     });
                     res_events.extend(modifier_snapshot(cg_ev.get_flags()));
                     notify_tx

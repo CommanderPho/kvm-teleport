@@ -9,7 +9,7 @@ use gtk::{
     Label, ListBox, PropagationPhase, Scale, ScrolledWindow, Switch, gdk, gio, glib,
 };
 
-use mousehop_ipc::{DEFAULT_PORT, FrontendRequestWriter};
+use mousehop_ipc::{DEFAULT_PORT, FrontendRequestWriter, WorkspaceIpc};
 
 use crate::authorization_window::AuthorizationWindow;
 use crate::clipboard_privacy_window::ClipboardPrivacyWindow;
@@ -78,6 +78,8 @@ pub struct Window {
     pub about_source_row: TemplateChild<ActionRow>,
     #[template_child]
     pub about_copy_button: TemplateChild<Button>,
+    /// Latest shared workspace snapshot from the daemon.
+    pub workspace: RefCell<WorkspaceIpc>,
     pub clients: RefCell<Option<gio::ListStore>>,
     pub authorized: RefCell<Option<gio::ListStore>>,
     pub frontend_request_writer: RefCell<Option<FrontendRequestWriter>>,
@@ -299,6 +301,19 @@ impl ObjectImpl for Window {
         obj.setup_icon();
         obj.setup_clients();
         obj.setup_authorized();
+
+        // Shared layout editor entry point (About → build row).
+        self.about_build_row
+            .set_subtitle("Open shared monitor layout…");
+        self.about_build_row.set_activatable(true);
+        self.about_build_row.connect_activated(clone!(
+            #[weak(rename_to = window)]
+            obj,
+            move |_| {
+                window.request(mousehop_ipc::FrontendRequest::GetWorkspace);
+                window.open_workspace_editor();
+            }
+        ));
 
         // Connect the auto-release threshold slider. Stash the handler
         // id so set_release_threshold() can block the signal when the

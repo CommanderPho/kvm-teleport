@@ -575,6 +575,15 @@ crossing_modifier = "control"
 
 Where `left` can be either `left`, `right`, `top` or `bottom`.
 
+### Shared spatial layout (per-monitor)
+
+For Teleport-style placement of **individual monitors** across peers, see
+[SHARED_LAYOUT.md](SHARED_LAYOUT.md). Configuration lives in `workspace.toml`
+beside `config.toml`; the GTK **About → build** row opens the layout editor.
+Peers without the shared-workspace capability keep the four-edge `position`
+model above. Manual Win/macOS checks:
+[docs/manual-spatial-checklist.md](docs/manual-spatial-checklist.md).
+
 ### macOS Command as Control
 
 On a Mac, each outgoing client has an optional **Use Command as

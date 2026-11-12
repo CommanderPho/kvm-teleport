@@ -1,6 +1,7 @@
 use input_event::{
     ClipboardEvent, Event as InputEvent, KeyboardEvent, PointerEvent,
     display::{DisplayLayout, DisplayRect},
+    workspace::LocalTopology,
 };
 use num_enum::{IntoPrimitive, TryFromPrimitive, TryFromPrimitiveError};
 use paste::paste;
@@ -9,6 +10,41 @@ use std::{
     mem::size_of,
 };
 use thiserror::Error;
+
+pub mod workspace_wire;
+
+/// Encode a variable-length protocol event, or `Ok(None)` for fixed-size events.
+pub fn encode_variable_event(event: &ProtoEvent) -> Result<Option<Vec<u8>>, ProtocolError> {
+    match event {
+        ProtoEvent::Clipboard { .. } => encode_clipboard_event(event).map(Some),
+        ProtoEvent::DisplayLayout { .. } => encode_display_layout_event(event).map(Some),
+        ProtoEvent::IdentifiedTopology { .. } => {
+            workspace_wire::encode_identified_topology(event).map(Some)
+        }
+        ProtoEvent::WorkspaceChunk { .. } => {
+            workspace_wire::encode_workspace_chunk(event).map(Some)
+        }
+        ProtoEvent::HandoverEnterSpatial { .. } => {
+            workspace_wire::encode_handover_enter_spatial(event).map(Some)
+        }
+        _ => Ok(None),
+    }
+}
+
+/// Decode a datagram that may be fixed- or variable-length.
+pub fn decode_proto_datagram(bytes: &[u8]) -> Option<ProtoEvent> {
+    let tag = *bytes.first()?;
+    match EventType::try_from(tag).ok()? {
+        EventType::Clipboard => decode_clipboard_event(bytes).ok(),
+        EventType::DisplayLayout => decode_display_layout_event(bytes).ok(),
+        EventType::IdentifiedTopology => workspace_wire::decode_identified_topology(bytes).ok(),
+        EventType::WorkspaceChunk => workspace_wire::decode_workspace_chunk(bytes).ok(),
+        EventType::HandoverEnterSpatial => {
+            workspace_wire::decode_handover_enter_spatial(bytes).ok()
+        }
+        _ => decode_fixed_event(bytes).ok(),
+    }
+}
 
 /// Defines the maximum size a fixed-buffer encoded event can take up.
 /// Clipboard and display-topology events use their dedicated variable-length
@@ -72,8 +108,14 @@ pub const CAP_ATOMIC_HANDOVER: u32 = 1 << 0;
 /// was actually applied.
 pub const CAP_TRANSACTIONAL_HANDOVER: u32 = 1 << 1;
 
+/// Peer supports shared spatial workspace routing: identified topologies,
+/// workspace snapshot sync, and per-display landings. Without this bit, peers
+/// retain legacy whole-desktop `Position` + `cross_fraction` handoffs.
+pub const CAP_SHARED_WORKSPACE: u32 = 1 << 2;
+
 /// Capabilities implemented completely by this protocol build.
-pub const PROTOCOL_CAPABILITIES: u32 = CAP_ATOMIC_HANDOVER | CAP_TRANSACTIONAL_HANDOVER;
+pub const PROTOCOL_CAPABILITIES: u32 =
+    CAP_ATOMIC_HANDOVER | CAP_TRANSACTIONAL_HANDOVER | CAP_SHARED_WORKSPACE;
 
 /// error type for protocol violations
 #[derive(Debug, Error)]
@@ -133,6 +175,15 @@ pub enum ProtocolError {
     /// not enough bytes left in the buffer
     #[error("buffer too small for protocol payload")]
     BufferTooSmall,
+    /// workspace snapshot payload failed validation
+    #[error("invalid workspace payload")]
+    InvalidWorkspacePayload,
+    /// workspace snapshot exceeds the bounded chunk budget
+    #[error("workspace payload too large: {0} bytes")]
+    WorkspacePayloadTooLarge(usize),
+    /// spatial handover display id is empty or overlong
+    #[error("invalid spatial destination display id")]
+    InvalidSpatialDisplayId,
 }
 
 /// Position of a client
@@ -319,6 +370,33 @@ pub enum ProtoEvent {
     /// watchdog released held keys). The sender must release an exactly
     /// matching active capture instead of continuing to send into a void.
     OwnershipLost { serial: u32 },
+    /// Identified per-monitor topology (display ids + scale). Sent alongside
+    /// legacy [`ProtoEvent::DisplayLayout`] when both peers advertise
+    /// [`CAP_SHARED_WORKSPACE`].
+    IdentifiedTopology {
+        epoch: u64,
+        generation: u32,
+        topology: LocalTopology,
+    },
+    /// One chunk of an authority-published workspace snapshot.
+    WorkspaceChunk {
+        revision: u64,
+        index: u8,
+        count: u8,
+        data: Vec<u8>,
+    },
+    /// Acknowledges receipt and acceptance of workspace revision `revision`.
+    WorkspaceAck { revision: u64 },
+    /// Atomic handover with an absolute per-display landing. Used only when
+    /// both peers negotiate [`CAP_SHARED_WORKSPACE`].
+    HandoverEnterSpatial {
+        serial: u32,
+        workspace_rev: u64,
+        topology_gen: u32,
+        dest_display_id: String,
+        local_x: i32,
+        local_y: i32,
+    },
 }
 
 impl Display for ProtoEvent {
@@ -414,6 +492,37 @@ impl Display for ProtoEvent {
                 write!(f, "HandoverLeaveAck({serial})")
             }
             ProtoEvent::OwnershipLost { serial } => write!(f, "OwnershipLost({serial})"),
+            ProtoEvent::IdentifiedTopology {
+                epoch,
+                generation,
+                topology,
+            } => write!(
+                f,
+                "IdentifiedTopology(epoch={epoch}, generation={generation}, {} displays)",
+                topology.displays.len()
+            ),
+            ProtoEvent::WorkspaceChunk {
+                revision,
+                index,
+                count,
+                data,
+            } => write!(
+                f,
+                "WorkspaceChunk(rev={revision}, {index}/{count}, {}b)",
+                data.len()
+            ),
+            ProtoEvent::WorkspaceAck { revision } => write!(f, "WorkspaceAck({revision})"),
+            ProtoEvent::HandoverEnterSpatial {
+                serial,
+                workspace_rev,
+                topology_gen,
+                dest_display_id,
+                local_x,
+                local_y,
+            } => write!(
+                f,
+                "HandoverEnterSpatial({serial}, rev={workspace_rev}, gen={topology_gen}, {dest_display_id}@{local_x},{local_y})"
+            ),
         }
     }
 }
@@ -462,6 +571,14 @@ pub enum EventType {
     HandoverLeaveAck,
     /// Receiver reports that a handover serial no longer owns input.
     OwnershipLost,
+    /// Variable-length identified topology with stable display ids.
+    IdentifiedTopology,
+    /// Variable-length workspace snapshot chunk.
+    WorkspaceChunk,
+    /// Fixed-size acknowledgement for a workspace revision.
+    WorkspaceAck,
+    /// Variable-length spatial handover enter with absolute landing.
+    HandoverEnterSpatial,
 }
 
 fn input_event_wire_len(event_type: EventType) -> Option<usize> {
@@ -579,6 +696,10 @@ impl ProtoEvent {
             ProtoEvent::HandoverLeave { .. } => EventType::HandoverLeave,
             ProtoEvent::HandoverLeaveAck { .. } => EventType::HandoverLeaveAck,
             ProtoEvent::OwnershipLost { .. } => EventType::OwnershipLost,
+            ProtoEvent::IdentifiedTopology { .. } => EventType::IdentifiedTopology,
+            ProtoEvent::WorkspaceChunk { .. } => EventType::WorkspaceChunk,
+            ProtoEvent::WorkspaceAck { .. } => EventType::WorkspaceAck,
+            ProtoEvent::HandoverEnterSpatial { .. } => EventType::HandoverEnterSpatial,
         }
     }
 }
@@ -691,6 +812,12 @@ impl TryFrom<[u8; MAX_EVENT_SIZE]> for ProtoEvent {
             EventType::OwnershipLost => Ok(Self::OwnershipLost {
                 serial: decode_nonzero_handover_serial(&mut buf)?,
             }),
+            EventType::IdentifiedTopology
+            | EventType::WorkspaceChunk
+            | EventType::HandoverEnterSpatial => Err(ProtocolError::BufferTooSmall),
+            EventType::WorkspaceAck => Ok(Self::WorkspaceAck {
+                revision: decode_u64(&mut buf)?,
+            }),
         }
     }
 }
@@ -738,9 +865,12 @@ pub fn decode_fixed_event(bytes: &[u8]) -> Result<ProtoEvent, ProtocolError> {
         EventType::HandoverAck => (bytes.len() == 6, "6 bytes"),
         EventType::HandoverLeave => (bytes.len() == 9, "9 bytes"),
         EventType::HandoverLeaveAck | EventType::OwnershipLost => (bytes.len() == 5, "5 bytes"),
-        EventType::Clipboard | EventType::DisplayLayout => {
-            (false, "a dedicated variable-length frame")
-        }
+        EventType::WorkspaceAck => (bytes.len() == 9, "9 bytes"),
+        EventType::Clipboard
+        | EventType::DisplayLayout
+        | EventType::IdentifiedTopology
+        | EventType::WorkspaceChunk
+        | EventType::HandoverEnterSpatial => (false, "a dedicated variable-length frame"),
     };
     if !length_is_valid {
         return Err(ProtocolError::InvalidEventLength {
@@ -902,6 +1032,12 @@ impl From<ProtoEvent> for ([u8; MAX_EVENT_SIZE], usize) {
                 ProtoEvent::HandoverLeaveAck { serial } | ProtoEvent::OwnershipLost { serial } => {
                     encode_u32(buf, len, serial)
                 }
+                ProtoEvent::WorkspaceAck { revision } => encode_u64(buf, len, revision),
+                ProtoEvent::IdentifiedTopology { .. }
+                | ProtoEvent::WorkspaceChunk { .. }
+                | ProtoEvent::HandoverEnterSpatial { .. } => {
+                    panic!("variable-length workspace events use dedicated encoders")
+                }
             }
         }
         (buf, len)
@@ -922,6 +1058,7 @@ macro_rules! decode_impl {
 
 decode_impl!(u8);
 decode_impl!(u32);
+decode_impl!(u64);
 decode_impl!(i32);
 decode_impl!(f32);
 decode_impl!(f64);
@@ -952,6 +1089,7 @@ macro_rules! encode_impl {
 
 encode_impl!(u8);
 encode_impl!(u32);
+encode_impl!(u64);
 encode_impl!(i32);
 encode_impl!(f32);
 encode_impl!(f64);

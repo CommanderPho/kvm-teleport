@@ -60,6 +60,10 @@ pub(crate) fn entered_barrier(
     curr_pos: (i32, i32),
     displays: &[RECT],
 ) -> Option<Position> {
+    let armed = crate::spatial::current_armed_routes();
+    if let Some(route) = crate::spatial::crossed_armed_route(&armed, prev_pos, curr_pos) {
+        return Some(route.position);
+    }
     [
         Position::Left,
         Position::Right,

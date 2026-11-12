@@ -668,6 +668,60 @@ pub enum FrontendEvent {
     /// enumeration isn't reachable (no compositor support, missing
     /// permissions, transient race).
     RunningApps(Vec<RunningApp>),
+    /// Shared workspace snapshot for the layout editor.
+    WorkspaceUpdated(WorkspaceIpc),
+    /// Workspace draft/apply failed validation.
+    WorkspaceValidationError(String),
+}
+
+/// IPC view of the shared spatial workspace.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceIpc {
+    pub workspace_id: String,
+    pub revision: u64,
+    pub authority_fingerprint: String,
+    /// True when this device is the authority (may edit).
+    pub is_authority: bool,
+    pub placements: Vec<WorkspacePlacementIpc>,
+    /// Traversable edge highlights for the editor (workspace coordinates).
+    pub routes: Vec<WorkspaceRouteIpc>,
+    pub devices: Vec<WorkspaceDeviceIpc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspacePlacementIpc {
+    pub fingerprint: String,
+    pub origin_x: i32,
+    pub origin_y: i32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceRouteIpc {
+    pub src_fingerprint: String,
+    pub src_display_id: String,
+    pub edge: String,
+    pub start: i32,
+    pub end: i32,
+    pub dst_fingerprint: String,
+    pub dst_display_id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceDeviceIpc {
+    pub fingerprint: String,
+    pub label: String,
+    /// `local`, `remote`, or `offline`.
+    pub presence: String,
+    pub displays: Vec<WorkspaceDisplayIpc>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkspaceDisplayIpc {
+    pub id: String,
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
 }
 
 /// One running-app candidate for the suppression-list picker. The
@@ -778,6 +832,12 @@ pub enum FrontendRequest {
     /// populated. The daemon replies with a
     /// [`FrontendEvent::RunningApps`].
     ListRunningApps,
+    /// Fetch the current shared workspace snapshot (may be empty/legacy).
+    GetWorkspace,
+    /// Authority applies a new shared workspace configuration.
+    ApplyWorkspace(WorkspaceIpc),
+    /// Designate the workspace authority fingerprint (`"self"` = this device).
+    SetWorkspaceAuthority(String),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, Serialize, Deserialize)]

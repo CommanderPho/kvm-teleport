@@ -644,9 +644,10 @@ where
                     });
                     event_tx
                         .send((pos, CaptureEvent::Begin {
-                            cursor,
-                            normalized_cursor,
-                        }))
+                        cursor,
+                        normalized_cursor,
+                        outbound: None,
+                    }))
                         .await
                         .expect("no channel");
                     active_capture = Some((activated, pos));

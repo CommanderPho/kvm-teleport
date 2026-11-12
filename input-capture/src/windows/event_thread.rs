@@ -454,6 +454,7 @@ fn check_client_activation(wparam: WPARAM, lparam: LPARAM) -> bool {
         CaptureEvent::Begin {
             cursor: None,
             normalized_cursor: None,
+            outbound: None,
         },
     ) {
         log::error!("forwarding channel full — dropped capture-begin event: {e}");

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 pub mod display;
 pub mod error;
 pub mod scancode;
+pub mod workspace;
 
 #[cfg(all(unix, feature = "libei", not(target_os = "macos")))]
 mod libei;

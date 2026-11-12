@@ -20,6 +20,7 @@ mod single_instance;
 mod window;
 #[cfg(windows)]
 mod windows_tray;
+mod workspace_editor;
 
 use std::{env, process, str, sync::OnceLock};
 
@@ -633,6 +634,12 @@ fn build_ui(app: &Application) {
                     }
                     FrontendEvent::RunningApps(apps) => {
                         window.set_running_apps(apps);
+                    }
+                    FrontendEvent::WorkspaceUpdated(ws) => {
+                        window.set_workspace(ws);
+                    }
+                    FrontendEvent::WorkspaceValidationError(msg) => {
+                        window.show_toast(msg.as_str());
                     }
                 }
             }

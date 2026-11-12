@@ -5,9 +5,8 @@ use input_event::{Event as InputEvent, KeyboardEvent};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use mousehop_ipc::{ClientHandle, ConnectionMode, DEFAULT_PORT};
 use mousehop_proto::{
-    MAX_CLIPBOARD_SIZE, MAX_EVENT_SIZE, PROTOCOL_MAGIC, ProtoEvent, decode_clipboard_event,
-    decode_display_layout_event, decode_fixed_event, encode_clipboard_event,
-    encode_display_layout_event,
+    MAX_CLIPBOARD_SIZE, MAX_EVENT_SIZE, PROTOCOL_MAGIC, ProtoEvent, decode_fixed_event,
+    decode_proto_datagram, encode_display_layout_event, encode_variable_event,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -422,22 +421,12 @@ impl MousehopConnection {
         // Clipboard and display-topology frames are variable-length and can't
         // ride the fixed-size codec; route them through dedicated helpers. For
         // all other events the existing 21-byte path is faster.
-        let bytes_owned: Option<Vec<u8>> = match &event {
-            ProtoEvent::Clipboard { .. } => match encode_clipboard_event(&event) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    log::warn!("dropping oversize clipboard event for client {handle}: {e}");
-                    return Ok(());
-                }
-            },
-            ProtoEvent::DisplayLayout { .. } => match encode_display_layout_event(&event) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    log::warn!("dropping invalid display layout for client {handle}: {e}");
-                    return Ok(());
-                }
-            },
-            _ => None,
+        let bytes_owned = match encode_variable_event(&event) {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("dropping invalid variable event for client {handle}: {e}");
+                return Ok(());
+            }
         };
         let bytes_fixed: ([u8; MAX_EVENT_SIZE], usize) = if bytes_owned.is_some() {
             ([0u8; MAX_EVENT_SIZE], 0)
@@ -536,22 +525,12 @@ impl MousehopConnection {
         let event_display = format!("{event}");
         let send_when_emulation_inactive = matches!(&event, ProtoEvent::HostInputState { .. });
         let session_cleanup = is_session_cleanup_event(&event);
-        let bytes_owned: Option<Vec<u8>> = match &event {
-            ProtoEvent::Clipboard { .. } => match encode_clipboard_event(&event) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    log::warn!("dropping oversize clipboard event for client {handle}: {e}");
-                    return Ok(());
-                }
-            },
-            ProtoEvent::DisplayLayout { .. } => match encode_display_layout_event(&event) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    log::warn!("dropping invalid display layout for client {handle}: {e}");
-                    return Ok(());
-                }
-            },
-            _ => None,
+        let bytes_owned = match encode_variable_event(&event) {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("dropping invalid variable event for client {handle}: {e}");
+                return Ok(());
+            }
         };
         let bytes_fixed: ([u8; MAX_EVENT_SIZE], usize) = if bytes_owned.is_some() {
             ([0u8; MAX_EVENT_SIZE], 0)
@@ -1136,18 +1115,6 @@ async fn receive_loop(
 /// Classify the first byte of a DTLS datagram and dispatch through
 /// a variable-length codec or the fixed-buffer `try_into` path. Returns
 /// `None` on any decode failure (bad tag, truncated payload, oversize frame).
-fn decode_proto_datagram(bytes: &[u8]) -> Option<ProtoEvent> {
-    use mousehop_proto::EventType;
-    let tag = *bytes.first()?;
-    if tag == EventType::Clipboard as u8 {
-        return decode_clipboard_event(bytes).ok();
-    }
-    if tag == EventType::DisplayLayout as u8 {
-        return decode_display_layout_event(bytes).ok();
-    }
-    decode_fixed_event(bytes).ok()
-}
-
 async fn connection_is_current(
     conns: &Mutex<HashMap<SocketAddr, ConnectionSlot>>,
     sessions: &SessionTracker,

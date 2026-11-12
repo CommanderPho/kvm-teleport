@@ -89,6 +89,8 @@ pub struct Service {
     port: u16,
     /// the public key fingerprint for (D)TLS
     public_key_fingerprint: String,
+    /// Shared spatial workspace (absent file ⇒ legacy Position mode).
+    workspace: crate::workspace_state::WorkspaceState,
     /// notify for pending frontend events
     frontend_event_pending: Notify,
     /// frontend events queued for sending
@@ -292,6 +294,14 @@ impl Service {
                     None
                 }
             };
+        let mut workspace = crate::workspace_state::WorkspaceState::new(
+            config.config_dir(),
+            public_key_fingerprint.clone(),
+        );
+        if let Err(e) = workspace.load_from_disk() {
+            log::warn!("workspace.toml load failed: {e}; starting without shared layout");
+        }
+
         let service = Self {
             config,
             capture,
@@ -302,6 +312,7 @@ impl Service {
             authorized_keys,
             primary_cache,
             public_key_fingerprint,
+            workspace,
             client_manager,
             frontend_event_pending: Default::default(),
             port,
@@ -552,7 +563,140 @@ impl Service {
                 let apps = frontmost_app::list_running_apps();
                 self.notify_frontend(FrontendEvent::RunningApps(apps));
             }
+            FrontendRequest::GetWorkspace => {
+                self.notify_frontend(FrontendEvent::WorkspaceUpdated(self.workspace_ipc()));
+            }
+            FrontendRequest::ApplyWorkspace(ipc) => self.apply_workspace_ipc(ipc),
+            FrontendRequest::SetWorkspaceAuthority(fp) => self.set_workspace_authority(fp),
         }
+    }
+
+    fn workspace_ipc(&self) -> mousehop_ipc::WorkspaceIpc {
+        use mousehop_ipc::{
+            WorkspaceDeviceIpc, WorkspaceDisplayIpc, WorkspaceIpc, WorkspacePlacementIpc,
+            WorkspaceRouteIpc,
+        };
+        let Some(config) = self.workspace.config() else {
+            return WorkspaceIpc {
+                is_authority: true,
+                authority_fingerprint: self.public_key_fingerprint.clone(),
+                ..Default::default()
+            };
+        };
+        let snapshot = self.workspace.snapshot();
+        let routes = snapshot
+            .map(|s| {
+                s.routes()
+                    .iter()
+                    .map(|r| WorkspaceRouteIpc {
+                        src_fingerprint: r.src_peer.clone(),
+                        src_display_id: r.src_display.as_str().to_string(),
+                        edge: format!("{:?}", r.src_edge).to_lowercase(),
+                        start: r.src_start,
+                        end: r.src_end,
+                        dst_fingerprint: r.dst_peer.clone(),
+                        dst_display_id: r.dst_display.as_str().to_string(),
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        WorkspaceIpc {
+            workspace_id: config.workspace_id.clone(),
+            revision: config.revision,
+            authority_fingerprint: config.authority_fingerprint.clone(),
+            is_authority: self.workspace.is_authority(),
+            placements: config
+                .placements
+                .iter()
+                .map(|p| WorkspacePlacementIpc {
+                    fingerprint: p.peer_fingerprint.clone(),
+                    origin_x: p.origin_in_workspace.0,
+                    origin_y: p.origin_in_workspace.1,
+                })
+                .collect(),
+            routes,
+            devices: config
+                .placements
+                .iter()
+                .map(|p| {
+                    let presence = if p.peer_fingerprint == self.public_key_fingerprint {
+                        "local"
+                    } else {
+                        "remote"
+                    };
+                    WorkspaceDeviceIpc {
+                        fingerprint: p.peer_fingerprint.clone(),
+                        label: p.peer_fingerprint.chars().take(8).collect(),
+                        presence: presence.into(),
+                        displays: Vec::<WorkspaceDisplayIpc>::new(),
+                    }
+                })
+                .collect(),
+        }
+    }
+
+    fn apply_workspace_ipc(&mut self, ipc: mousehop_ipc::WorkspaceIpc) {
+        use input_event::workspace::{DevicePlacement, WorkspaceConfig};
+        let config = WorkspaceConfig {
+            workspace_id: if ipc.workspace_id.is_empty() {
+                "default".into()
+            } else {
+                ipc.workspace_id
+            },
+            revision: ipc.revision,
+            authority_fingerprint: self.public_key_fingerprint.clone(),
+            placements: ipc
+                .placements
+                .into_iter()
+                .map(|p| DevicePlacement {
+                    peer_fingerprint: p.fingerprint,
+                    origin_in_workspace: (p.origin_x, p.origin_y),
+                })
+                .collect(),
+        };
+        match self.workspace.apply_local(config) {
+            Ok(()) => {
+                self.push_spatial_routing();
+                self.notify_frontend(FrontendEvent::WorkspaceUpdated(self.workspace_ipc()));
+            }
+            Err(e) => self.notify_frontend(FrontendEvent::WorkspaceValidationError(e.to_string())),
+        }
+    }
+
+    fn set_workspace_authority(&mut self, fp: String) {
+        let fp = if fp == "self" || fp.is_empty() {
+            self.public_key_fingerprint.clone()
+        } else {
+            fp
+        };
+        if let Some(mut config) = self.workspace.config().cloned() {
+            config.authority_fingerprint = fp;
+            config.revision = config.revision.saturating_add(1);
+            match self.workspace.apply_local(config) {
+                Ok(()) => {
+                    self.push_spatial_routing();
+                    self.notify_frontend(FrontendEvent::WorkspaceUpdated(self.workspace_ipc()));
+                }
+                Err(e) => {
+                    self.notify_frontend(FrontendEvent::WorkspaceValidationError(e.to_string()))
+                }
+            }
+        } else if let Err(e) = self.workspace.ensure_authority_workspace("default") {
+            self.notify_frontend(FrontendEvent::WorkspaceValidationError(e.to_string()));
+        } else {
+            self.push_spatial_routing();
+            self.notify_frontend(FrontendEvent::WorkspaceUpdated(self.workspace_ipc()));
+        }
+    }
+
+    fn push_spatial_routing(&self) {
+        use std::sync::Arc;
+        let snapshot = self.workspace.snapshot().cloned().map(Arc::new);
+        self.capture.set_spatial_routing(
+            self.public_key_fingerprint.clone(),
+            Default::default(),
+            snapshot,
+        );
     }
 
     fn add_suppressed_app(&mut self, value: String) {
@@ -1192,6 +1336,7 @@ impl Service {
         for event in recovery_events {
             self.notify_frontend(event);
         }
+        self.notify_frontend(FrontendEvent::WorkspaceUpdated(self.workspace_ipc()));
     }
 
     const ENTER_HANDLE_BEGIN: u64 = u64::MAX / 2 + 1;

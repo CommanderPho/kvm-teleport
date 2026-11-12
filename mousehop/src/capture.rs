@@ -6,17 +6,21 @@ use std::{
 };
 
 use futures::StreamExt;
+use input_capture::spatial::ArmedRoute;
 use input_capture::{
     CaptureError, CaptureEvent, CaptureHandle, HostInputState, InputCapture, InputCaptureError,
     Position,
 };
+use input_event::display::DisplayEdge;
+use input_event::workspace::{OutboundDir, RoutingSnapshot};
 use input_event::{Event, KeyboardEvent, PointerEvent, scancode};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use mousehop_ipc::CrossingModifier;
 use mousehop_proto::{
-    CAP_ATOMIC_HANDOVER, CAP_TRANSACTIONAL_HANDOVER, HandoverWarpStatus,
+    CAP_ATOMIC_HANDOVER, CAP_SHARED_WORKSPACE, CAP_TRANSACTIONAL_HANDOVER, HandoverWarpStatus,
     HostInputState as ProtoHostInputState, LEAVE_HANDOVER, LEAVE_RELEASE_ONLY, ProtoEvent,
 };
+use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio::task::{JoinHandle, spawn_local};
 use tokio_util::sync::CancellationToken;
@@ -104,6 +108,12 @@ enum CaptureRequest {
     SetCommandAsCtrl(CaptureHandle, bool),
     /// Update the optional modifier gate for a client's next crossing.
     SetCrossingModifier(CaptureHandle, Option<CrossingModifier>),
+    /// Replace the immutable spatial routing snapshot used on Begin.
+    SetSpatialRouting {
+        local_fingerprint: String,
+        peer_fingerprints: HashMap<CaptureHandle, String>,
+        snapshot: Option<Arc<RoutingSnapshot>>,
+    },
 }
 
 impl Capture {
@@ -141,6 +151,9 @@ impl Capture {
             next_handover_serial: 0,
             peer_capabilities: Default::default(),
             peer_pressed_keys: Default::default(),
+            local_fingerprint: String::new(),
+            peer_fingerprints: Default::default(),
+            spatial_snapshot: None,
             #[cfg(target_os = "macos")]
             user_activity: Default::default(),
         };
@@ -227,6 +240,19 @@ impl Capture {
         let _ = self
             .request_tx
             .send(CaptureRequest::SetCrossingModifier(handle, modifier));
+    }
+
+    pub(crate) fn set_spatial_routing(
+        &self,
+        local_fingerprint: String,
+        peer_fingerprints: HashMap<CaptureHandle, String>,
+        snapshot: Option<Arc<RoutingSnapshot>>,
+    ) {
+        let _ = self.request_tx.send(CaptureRequest::SetSpatialRouting {
+            local_fingerprint,
+            peer_fingerprints,
+            snapshot,
+        });
     }
 }
 
@@ -614,6 +640,12 @@ struct CaptureTask {
     /// Local capture state can run ahead of the wire during the Ack gate or a
     /// failed send, so release cleanup must use this wire-visible set.
     peer_pressed_keys: HashSet<scancode::Linux>,
+    /// Local TLS fingerprint for workspace routing lookups.
+    local_fingerprint: String,
+    /// Capture handle → authenticated peer fingerprint (when known).
+    peer_fingerprints: HashMap<CaptureHandle, String>,
+    /// Active immutable routing snapshot; hot path only reads this Arc.
+    spatial_snapshot: Option<Arc<RoutingSnapshot>>,
     #[cfg(target_os = "macos")]
     user_activity: crate::macos_power::UserActivity,
 }
@@ -794,6 +826,48 @@ impl CaptureTask {
             || event_has_crossing_modifier(event, modifier)
     }
 
+    async fn arm_spatial_routes(
+        &self,
+        capture: &mut InputCapture,
+    ) -> Result<(), InputCaptureError> {
+        let routes = match self.spatial_snapshot.as_ref() {
+            Some(snapshot) => armed_routes_from_snapshot(snapshot, &self.local_fingerprint),
+            None => Vec::new(),
+        };
+        capture.set_spatial_routes(routes);
+        Ok(())
+    }
+
+    fn spatial_enter_for_begin(
+        &self,
+        handle: CaptureHandle,
+        cursor: Option<(i32, i32)>,
+        outbound: Option<OutboundDir>,
+    ) -> Option<input_event::workspace::Landing> {
+        let snapshot = self.spatial_snapshot.as_ref()?;
+        let peer_fp = self.peer_fingerprints.get(&handle)?;
+        let cursor = cursor?;
+        let dir = outbound.or_else(|| {
+            // Infer from configured Position when backend omitted outbound.
+            match self.try_get_pos(handle)? {
+                Position::Left => Some(OutboundDir::Left),
+                Position::Right => Some(OutboundDir::Right),
+                Position::Top => Some(OutboundDir::Up),
+                Position::Bottom => Some(OutboundDir::Down),
+            }
+        })?;
+        // Cursor is already in local device coordinates; convert via placement.
+        let display = snapshot.display_at_local(&self.local_fingerprint, cursor)?;
+        let workspace_point =
+            snapshot.local_to_workspace(&self.local_fingerprint, display, cursor)?;
+        let landing = snapshot.lookup(&self.local_fingerprint, workspace_point, dir)?;
+        if landing.dst_peer != *peer_fp {
+            // Position barrier fired for a different peer than the spatial route.
+            return None;
+        }
+        Some(landing)
+    }
+
     fn scoped_input(&self, event: Event) -> ProtoEvent {
         match self.active_handover_serial {
             Some(serial) => ProtoEvent::HandoverInput { serial, event },
@@ -965,6 +1039,15 @@ impl CaptureTask {
                         }
                         CaptureRequest::SetCommandAsCtrl(handle, enabled) => {
                             self.set_command_as_ctrl(handle, enabled);
+                        }
+                        CaptureRequest::SetSpatialRouting {
+                            local_fingerprint,
+                            peer_fingerprints,
+                            snapshot,
+                        } => {
+                            self.local_fingerprint = local_fingerprint;
+                            self.peer_fingerprints = peer_fingerprints;
+                            self.spatial_snapshot = snapshot;
                         }
                         CaptureRequest::SetCrossingModifier(handle, modifier) => {
                             self.set_crossing_modifier(handle, modifier);
@@ -1450,6 +1533,16 @@ impl CaptureTask {
                                 .await?;
                         }
                     }
+                    CaptureRequest::SetSpatialRouting {
+                        local_fingerprint,
+                        peer_fingerprints,
+                        snapshot,
+                    } => {
+                        self.local_fingerprint = local_fingerprint;
+                        self.peer_fingerprints = peer_fingerprints;
+                        self.spatial_snapshot = snapshot;
+                        self.arm_spatial_routes(capture).await?;
+                    }
                 },
                 _ = self.cancellation_token.cancelled() => break,
             }
@@ -1695,19 +1788,40 @@ impl CaptureTask {
         }
 
         let (proto_event, mapper_before_send) = match &event {
-            CaptureEvent::Begin { .. } => {
+            CaptureEvent::Begin {
+                outbound, cursor, ..
+            } => {
                 let session = self
                     .active_session
                     .expect("Begin session was checked before capture activation");
-                let supports_atomic = self
+                let caps = self
                     .peer_capabilities
                     .get(&(handle, session))
-                    .is_some_and(|capabilities| capabilities & CAP_ATOMIC_HANDOVER != 0);
-                let supports_transactional = self
-                    .peer_capabilities
-                    .get(&(handle, session))
-                    .is_some_and(|capabilities| capabilities & CAP_TRANSACTIONAL_HANDOVER != 0);
-                let (serial, enter, legacy_cursor) = if supports_atomic {
+                    .copied()
+                    .unwrap_or(0);
+                let supports_atomic = caps & CAP_ATOMIC_HANDOVER != 0;
+                let supports_transactional = caps & CAP_TRANSACTIONAL_HANDOVER != 0;
+                let supports_spatial = caps & CAP_SHARED_WORKSPACE != 0;
+                let spatial_enter = if supports_spatial && supports_atomic {
+                    self.spatial_enter_for_begin(handle, *cursor, *outbound)
+                } else {
+                    None
+                };
+                let (serial, enter, legacy_cursor) = if let Some(spatial) = spatial_enter {
+                    let serial = self.allocate_handover_serial();
+                    (
+                        serial,
+                        ProtoEvent::HandoverEnterSpatial {
+                            serial,
+                            workspace_rev: spatial.workspace_revision,
+                            topology_gen: spatial.dst_topology_generation,
+                            dest_display_id: spatial.dst_display.as_str().to_string(),
+                            local_x: spatial.local_position.0,
+                            local_y: spatial.local_position.1,
+                        },
+                        None,
+                    )
+                } else if supports_atomic {
                     let serial = self.allocate_handover_serial();
                     let cross_fraction = cursor_pos.map(|(pos, nx, ny)| match pos {
                         mousehop_proto::Position::Left | mousehop_proto::Position::Right => ny,
@@ -2112,6 +2226,45 @@ fn completes_lock_recovery(
         && ack_generation == host_input_generation
 }
 
+fn armed_routes_from_snapshot(
+    snapshot: &RoutingSnapshot,
+    local_fingerprint: &str,
+) -> Vec<ArmedRoute> {
+    snapshot
+        .routes_from(local_fingerprint)
+        .filter_map(|route| {
+            let position = match route.src_edge {
+                DisplayEdge::Left => Position::Left,
+                DisplayEdge::Right => Position::Right,
+                DisplayEdge::Top => Position::Top,
+                DisplayEdge::Bottom => Position::Bottom,
+            };
+            let rect = snapshot.workspace_rect(local_fingerprint, &route.src_display)?;
+            let (ox, oy) =
+                snapshot.local_to_workspace(local_fingerprint, &route.src_display, (0, 0))?;
+            let (start, end) = match route.src_edge {
+                DisplayEdge::Left | DisplayEdge::Right => {
+                    (route.src_start - oy, route.src_end - oy)
+                }
+                DisplayEdge::Top | DisplayEdge::Bottom => {
+                    (route.src_start - ox, route.src_end - ox)
+                }
+            };
+            let coordinate = match route.src_edge {
+                DisplayEdge::Left | DisplayEdge::Right => rect.edge_coordinate(route.src_edge) - ox,
+                DisplayEdge::Top | DisplayEdge::Bottom => rect.edge_coordinate(route.src_edge) - oy,
+            };
+            Some(ArmedRoute {
+                edge: route.src_edge,
+                start,
+                end,
+                coordinate,
+                position,
+            })
+        })
+        .collect()
+}
+
 fn to_capture_pos(pos: mousehop_ipc::Position) -> input_capture::Position {
     match pos {
         mousehop_ipc::Position::Left => input_capture::Position::Left,
@@ -2192,6 +2345,9 @@ mod command_ctrl_tests {
             next_handover_serial: 0,
             peer_capabilities: Default::default(),
             peer_pressed_keys: Default::default(),
+            local_fingerprint: String::new(),
+            peer_fingerprints: Default::default(),
+            spatial_snapshot: None,
             #[cfg(target_os = "macos")]
             user_activity: Default::default(),
         }

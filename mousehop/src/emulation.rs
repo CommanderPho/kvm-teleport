@@ -11,8 +11,8 @@ use input_event::{
 use local_channel::mpsc::{Receiver, Sender, channel};
 use mousehop_ipc::IncomingPeerConfig;
 use mousehop_proto::{
-    CAP_TRANSACTIONAL_HANDOVER, HandoverWarpStatus, HostInputState, LEAVE_HANDOVER,
-    LEAVE_RELEASE_ONLY, Position, ProtoEvent,
+    CAP_SHARED_WORKSPACE, CAP_TRANSACTIONAL_HANDOVER, HandoverWarpStatus, HostInputState,
+    LEAVE_HANDOVER, LEAVE_RELEASE_ONLY, Position, ProtoEvent,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -564,6 +564,163 @@ impl ListenTask {
                                             fingerprint,
                                         }).expect("channel closed");
                                     }
+                                }
+                            }
+                            ProtoEvent::HandoverEnterSpatial {
+                                serial,
+                                workspace_rev: _,
+                                topology_gen: _,
+                                dest_display_id: _,
+                                local_x,
+                                local_y,
+                            } => {
+                                let key = (addr, session);
+                                let transactional = peer_capabilities
+                                    .get(&key)
+                                    .is_some_and(|capabilities| {
+                                        capabilities & CAP_TRANSACTIONAL_HANDOVER != 0
+                                    });
+                                let shared = peer_capabilities.get(&key).is_some_and(|c| {
+                                    c & CAP_SHARED_WORKSPACE != 0
+                                });
+                                if !shared {
+                                    log::debug!(
+                                        "dropping spatial handover {serial} from peer without CAP_SHARED_WORKSPACE"
+                                    );
+                                    continue;
+                                }
+                                if !remote_input_allowed(&self.locked_hosts, addr) {
+                                    log::debug!("dropping spatial handover {serial} from locked host {addr}");
+                                    continue;
+                                }
+                                match classify_handover(
+                                    completed_handovers.get(&key).map(|completed| completed.serial),
+                                    serial,
+                                ) {
+                                    HandoverDisposition::Reack => {
+                                        if input_owner_sessions.get(&key).copied() != Some(serial) {
+                                            continue;
+                                        }
+                                        let completed = completed_handovers
+                                            .get(&key)
+                                            .expect("classified completed handover")
+                                            .clone();
+                                        let pp = self.post_processing_for_addr(addr);
+                                        let layout = completed.layout.clone();
+                                        let bounds = layout.as_ref().and_then(DisplayLayout::size);
+                                        if self
+                                            .send_entry_metadata(
+                                                addr,
+                                                session,
+                                                pp,
+                                                bounds,
+                                                layout,
+                                                topology_epoch,
+                                                completed.topology_generation,
+                                            )
+                                            .await
+                                        {
+                                            self.reply_handover_ack(
+                                                addr,
+                                                session,
+                                                serial,
+                                                transactional,
+                                                completed.warp,
+                                            )
+                                            .await;
+                                        }
+                                        continue;
+                                    }
+                                    HandoverDisposition::DropStale => continue,
+                                    HandoverDisposition::Apply => {}
+                                }
+                                let Some(fingerprint) = self
+                                    .listener
+                                    .get_certificate_fingerprint(addr, session)
+                                    .await
+                                else {
+                                    continue;
+                                };
+                                if !self.session_is_current(addr, session) {
+                                    continue;
+                                }
+                                if !self.request_capture_release().await
+                                    || !self.session_is_current(addr, session)
+                                {
+                                    continue;
+                                }
+                                self.emulation_proxy.remove(addr);
+                                let (layout, warp) = match self
+                                    .emulation_proxy
+                                    .warp_cursor_absolute(local_x, local_y)
+                                    .await
+                                {
+                                    Some(EdgeWarpOutcome::Applied(layout)) => {
+                                        (Some(layout), HandoverWarpStatus::Applied)
+                                    }
+                                    Some(EdgeWarpOutcome::Unsupported) => (
+                                        self.emulation_proxy.refresh_display_layout().await,
+                                        HandoverWarpStatus::Unsupported,
+                                    ),
+                                    None => {
+                                        log::warn!(
+                                            "spatial handover {serial} absolute warp did not complete; withholding Ack"
+                                        );
+                                        continue;
+                                    }
+                                };
+                                if !self.session_is_current(addr, session) {
+                                    continue;
+                                }
+                                let pp = self.post_processing_for_addr(addr);
+                                let bounds = layout.as_ref().and_then(DisplayLayout::size);
+                                refresh_topology_generation(
+                                    &mut last_topology,
+                                    &mut topology_generation,
+                                    &layout,
+                                );
+                                let completed_layout = layout.clone();
+                                if !self
+                                    .send_entry_metadata(
+                                        addr,
+                                        session,
+                                        pp,
+                                        bounds,
+                                        layout,
+                                        topology_epoch,
+                                        topology_generation,
+                                    )
+                                    .await
+                                {
+                                    continue;
+                                }
+                                input_owner_sessions.insert(key, serial);
+                                completed_handovers.insert(
+                                    key,
+                                    CompletedHandover {
+                                        serial,
+                                        warp,
+                                        layout: completed_layout,
+                                        topology_generation,
+                                    },
+                                );
+                                self.reply_handover_ack(
+                                    addr,
+                                    session,
+                                    serial,
+                                    transactional,
+                                    warp,
+                                )
+                                .await;
+                                if self.session_is_current(addr, session) {
+                                    self.event_tx
+                                        .send(EmulationEvent::Entered {
+                                            addr,
+                                            session,
+                                            pos: mousehop_ipc::Position::Left,
+                                            fingerprint,
+                                        })
+                                        .expect("channel closed");
                                 }
                             }
                             ProtoEvent::HandoverEnter {
@@ -1302,6 +1459,8 @@ enum ProxyRequest {
     /// `Enter` to seat the cursor at the entry edge so the
     /// capturing peer's wall-press model is synchronized.
     WarpToEdge(DisplayEdge, f64, oneshot::Sender<Option<EdgeWarpOutcome>>),
+    /// Absolute warp in the OS capture/warp coordinate system (spatial landing).
+    WarpAbsolute(i32, i32, oneshot::Sender<Option<EdgeWarpOutcome>>),
     /// Query and cache a fresh topology snapshot on the emulation task. Entry
     /// metadata uses this instead of the periodic cache so a hotplug cannot
     /// split cursor placement and advertised geometry across generations.
@@ -1371,6 +1530,22 @@ impl EmulationProxy {
         if self
             .request_tx
             .send(ProxyRequest::WarpToEdge(edge, cross_fraction, completion))
+            .is_err()
+        {
+            return None;
+        }
+        completed.await.unwrap_or(None)
+    }
+
+    /// Warp to an absolute local coordinate for spatial handoffs.
+    pub(crate) async fn warp_cursor_absolute(&self, x: i32, y: i32) -> Option<EdgeWarpOutcome> {
+        if !self.emulation_active.get() {
+            return None;
+        }
+        let (completion, completed) = oneshot::channel();
+        if self
+            .request_tx
+            .send(ProxyRequest::WarpAbsolute(x, y, completion))
             .is_err()
         {
             return None;
@@ -1502,6 +1677,9 @@ impl EmulationTask {
                         forget_peer_state(&mut self.handles, &mut self.post_processing, addr);
                     }
                     ProxyRequest::WarpToEdge(_, _, completion) => {
+                        let _ = completion.send(None);
+                    }
+                    ProxyRequest::WarpAbsolute(_, _, completion) => {
                         let _ = completion.send(None);
                     }
                     ProxyRequest::RefreshDisplayLayout(completion) => {
@@ -1704,6 +1882,23 @@ impl EmulationTask {
                         };
                         let _ = completion.send(outcome);
                     }
+                    ProxyRequest::WarpAbsolute(x, y, completion) => {
+                        let outcome = match emulation.warp_cursor(x, y).await {
+                            Ok(()) => {
+                                let layout = emulation.display_layout();
+                                self.cache_display_layout(layout.clone());
+                                match layout {
+                                    Some(layout) => Some(EdgeWarpOutcome::Applied(layout)),
+                                    None => Some(EdgeWarpOutcome::Unsupported),
+                                }
+                            }
+                            Err(e) => {
+                                log::warn!("absolute cursor warp failed: {e}");
+                                None
+                            }
+                        };
+                        let _ = completion.send(outcome);
+                    }
                     ProxyRequest::RefreshDisplayLayout(completion) => {
                         let layout = emulation.display_layout();
                         self.cache_display_layout(layout.clone());
@@ -1755,6 +1950,9 @@ async fn wait_for_termination(
                 forget_peer_state(handles, post_processing, addr);
             }
             ProxyRequest::WarpToEdge(_, _, completion) => {
+                let _ = completion.send(None);
+            }
+            ProxyRequest::WarpAbsolute(_, _, completion) => {
                 let _ = completion.send(None);
             }
             ProxyRequest::RefreshDisplayLayout(completion) => {
