@@ -5,6 +5,236 @@
 		}
 	],
 	"settings": {
-		"specstory.cloudSync.enabled": "never"
+		"specstory.cloudSync.enabled": "never",
+		"workbench.colorTheme": "Default Dark Modern",
+		"workbench.colorCustomizations": {
+			"foreground": "#e8d5d5",
+			"focusBorder": "#8b1a2b",
+			"selection.background": "#6b1524aa",
+			"widget.shadow": "#00000088",
+			"descriptionForeground": "#b89a9a",
+			"errorForeground": "#ff6b6b",
+			"icon.foreground": "#c9a0a0",
+
+			"editor.background": "#0a0506",
+			"editor.foreground": "#e8d5d5",
+			"editor.lineHighlightBackground": "#1a0a0c",
+			"editor.lineHighlightBorder": "#2a1014",
+			"editor.selectionBackground": "#6b152466",
+			"editor.selectionHighlightBackground": "#4a101855",
+			"editor.inactiveSelectionBackground": "#3a0c1244",
+			"editor.findMatchBackground": "#8b1a2b88",
+			"editor.findMatchHighlightBackground": "#6b152455",
+			"editor.wordHighlightBackground": "#5a142044",
+			"editor.wordHighlightStrongBackground": "#7a1a2a55",
+			"editorCursor.foreground": "#e85a6a",
+			"editorWhitespace.foreground": "#3a2024",
+			"editorIndentGuide.background1": "#2a1518",
+			"editorIndentGuide.activeBackground1": "#6b1524",
+			"editorLineNumber.foreground": "#5a3035",
+			"editorLineNumber.activeForeground": "#c07078",
+			"editorGutter.background": "#0a0506",
+			"editorGutter.modifiedBackground": "#c9a227",
+			"editorGutter.addedBackground": "#3d8b5a",
+			"editorGutter.deletedBackground": "#8b1a2b",
+			"editorBracketMatch.background": "#6b152440",
+			"editorBracketMatch.border": "#8b1a2b",
+			"editorWidget.background": "#12080a",
+			"editorWidget.border": "#3a151a",
+			"editorSuggestWidget.background": "#12080a",
+			"editorSuggestWidget.border": "#3a151a",
+			"editorSuggestWidget.selectedBackground": "#6b1524",
+			"editorHoverWidget.background": "#12080a",
+			"editorHoverWidget.border": "#3a151a",
+			"editorGroupHeader.tabsBackground": "#080304",
+			"editorGroup.border": "#2a1014",
+			"editorOverviewRuler.border": "#1a0a0c",
+
+			"sideBar.background": "#080304",
+			"sideBar.foreground": "#d4b8b8",
+			"sideBar.border": "#2a1014",
+			"sideBarTitle.foreground": "#e8d5d5",
+			"sideBarSectionHeader.background": "#12080a",
+			"sideBarSectionHeader.foreground": "#c9a0a0",
+			"sideBarSectionHeader.border": "#2a1014",
+
+			"activityBar.background": "#050203",
+			"activityBar.foreground": "#e85a6a",
+			"activityBar.inactiveForeground": "#6a4045",
+			"activityBar.border": "#2a1014",
+			"activityBarBadge.background": "#8b1a2b",
+			"activityBarBadge.foreground": "#ffffff",
+
+			"statusBar.background": "#4a0e16",
+			"statusBar.foreground": "#e8d5d5",
+			"statusBar.border": "#6b1524",
+			"statusBar.noFolderBackground": "#3a0a10",
+			"statusBar.debuggingBackground": "#6b1524",
+			"statusBar.debuggingForeground": "#ffffff",
+			"statusBarItem.hoverBackground": "#6b1524",
+			"statusBarItem.remoteBackground": "#8b1a2b",
+			"statusBarItem.remoteForeground": "#ffffff",
+
+			"titleBar.activeBackground": "#080304",
+			"titleBar.activeForeground": "#e8d5d5",
+			"titleBar.inactiveBackground": "#050203",
+			"titleBar.inactiveForeground": "#6a4045",
+			"titleBar.border": "#2a1014",
+
+			"tab.activeBackground": "#0a0506",
+			"tab.activeForeground": "#e8d5d5",
+			"tab.activeBorderTop": "#e85a6a",
+			"tab.inactiveBackground": "#080304",
+			"tab.inactiveForeground": "#8a6065",
+			"tab.border": "#1a0a0c",
+			"tab.hoverBackground": "#1a0a0c",
+			"tab.unfocusedActiveBackground": "#0e0608",
+			"tab.unfocusedActiveForeground": "#b89a9a",
+
+			"panel.background": "#080304",
+			"panel.border": "#2a1014",
+			"panelTitle.activeForeground": "#e8d5d5",
+			"panelTitle.activeBorder": "#e85a6a",
+			"panelTitle.inactiveForeground": "#8a6065",
+
+			"terminal.background": "#050203",
+			"terminal.foreground": "#e8d5d5",
+			"terminal.ansiBlack": "#1a0a0c",
+			"terminal.ansiRed": "#e85a6a",
+			"terminal.ansiGreen": "#6aba7a",
+			"terminal.ansiYellow": "#d4a84b",
+			"terminal.ansiBlue": "#7a9ec9",
+			"terminal.ansiMagenta": "#c07098",
+			"terminal.ansiCyan": "#6ab0b0",
+			"terminal.ansiWhite": "#e8d5d5",
+			"terminal.ansiBrightBlack": "#5a3035",
+			"terminal.ansiBrightRed": "#ff7a8a",
+			"terminal.ansiBrightGreen": "#8ad49a",
+			"terminal.ansiBrightYellow": "#e8c86a",
+			"terminal.ansiBrightBlue": "#9ab8e0",
+			"terminal.ansiBrightMagenta": "#e090b0",
+			"terminal.ansiBrightCyan": "#8ad0d0",
+			"terminal.ansiBrightWhite": "#ffffff",
+			"terminalCursor.foreground": "#e85a6a",
+
+			"list.activeSelectionBackground": "#6b1524",
+			"list.activeSelectionForeground": "#ffffff",
+			"list.inactiveSelectionBackground": "#3a1018",
+			"list.inactiveSelectionForeground": "#e8d5d5",
+			"list.hoverBackground": "#1a0a0c",
+			"list.focusBackground": "#6b1524",
+			"list.focusForeground": "#ffffff",
+			"list.highlightForeground": "#e85a6a",
+			"list.errorForeground": "#ff6b6b",
+			"list.warningForeground": "#d4a84b",
+
+			"button.background": "#8b1a2b",
+			"button.foreground": "#ffffff",
+			"button.hoverBackground": "#a82035",
+			"button.secondaryBackground": "#2a1014",
+			"button.secondaryForeground": "#e8d5d5",
+			"button.secondaryHoverBackground": "#3a151a",
+
+			"input.background": "#12080a",
+			"input.foreground": "#e8d5d5",
+			"input.border": "#3a151a",
+			"input.placeholderForeground": "#6a4045",
+			"inputOption.activeBorder": "#e85a6a",
+			"inputOption.activeBackground": "#6b152455",
+			"inputValidation.errorBackground": "#3a0a10",
+			"inputValidation.errorBorder": "#e85a6a",
+			"inputValidation.warningBackground": "#2a2010",
+			"inputValidation.warningBorder": "#d4a84b",
+			"inputValidation.infoBackground": "#0a1a2a",
+			"inputValidation.infoBorder": "#7a9ec9",
+
+			"dropdown.background": "#12080a",
+			"dropdown.foreground": "#e8d5d5",
+			"dropdown.border": "#3a151a",
+			"dropdown.listBackground": "#12080a",
+
+			"badge.background": "#8b1a2b",
+			"badge.foreground": "#ffffff",
+			"progressBar.background": "#e85a6a",
+			"scrollbarSlider.background": "#6b152444",
+			"scrollbarSlider.hoverBackground": "#8b1a2b66",
+			"scrollbarSlider.activeBackground": "#a8203588",
+
+			"peekView.border": "#8b1a2b",
+			"peekViewEditor.background": "#0a0506",
+			"peekViewResult.background": "#080304",
+			"peekViewTitle.background": "#12080a",
+
+			"notificationCenterHeader.background": "#12080a",
+			"notifications.background": "#12080a",
+			"notifications.border": "#3a151a",
+			"notificationLink.foreground": "#e85a6a",
+
+			"gitDecoration.modifiedResourceForeground": "#d4a84b",
+			"gitDecoration.untrackedResourceForeground": "#6aba7a",
+			"gitDecoration.deletedResourceForeground": "#e85a6a",
+			"gitDecoration.conflictingResourceForeground": "#c07098",
+			"gitDecoration.ignoredResourceForeground": "#5a3035",
+
+			"minimap.background": "#080304",
+			"minimap.selectionHighlight": "#6b1524",
+			"minimapFinderMatchHighlight": "#8b1a2b",
+			"minimapGutter.addedBackground": "#3d8b5a",
+			"minimapGutter.modifiedBackground": "#c9a227",
+			"minimapGutter.deletedBackground": "#8b1a2b"
+		},
+		"editor.tokenColorCustomizations": {
+			"comments": "#6a4548",
+			"strings": "#d4a0a8",
+			"keywords": "#e85a6a",
+			"numbers": "#c9a070",
+			"types": "#c07078",
+			"functions": "#e8c0c0",
+			"variables": "#e8d5d5"
+		}
+	},
+
+	"tasks": {
+		"version": "2.0.0",
+		"tasks": [
+			{
+				"label": "Build Mousehop.app (release)",
+				"type": "shell",
+				"command": "scripts/build-macos-release.sh",
+				"options": {
+					"cwd": "${workspaceFolder}"
+				},
+				"group": {
+					"kind": "build",
+					"isDefault": true
+				},
+				"problemMatcher": [
+					"$rustc"
+				],
+				"presentation": {
+					"reveal": "always",
+					"panel": "shared",
+					"focus": false
+				},
+				"detail": "Icon → cargo bundle --release → vendor Homebrew dylibs → Mousehop.app"
+			},
+			{
+				"label": "Build mousehop binary (release)",
+				"type": "shell",
+				"command": "host=$(rustc -vV | awk '/^host:/{print $2}'); case \"$host\" in aarch64-*) p=\"${HOMEBREW_PREFIX:-/opt/homebrew}\";; x86_64-*) p=\"${HOMEBREW_PREFIX:-/usr/local}\";; *) echo \"unsupported rustc host: $host\" >&2; exit 1;; esac; export LIBRARY_PATH=\"$p/lib${LIBRARY_PATH:+:$LIBRARY_PATH}\" PKG_CONFIG_PATH=\"$p/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}\" PATH=\"$p/bin:$PATH\"; cargo build -p mousehop --release",
+				"options": {
+					"cwd": "${workspaceFolder}"
+				},
+				"group": "build",
+				"problemMatcher": [
+					"$rustc"
+				],
+				"presentation": {
+					"reveal": "always",
+					"panel": "shared"
+				},
+				"detail": "target/release/mousehop (no .app bundle)"
+			}
+		]
 	}
 }
