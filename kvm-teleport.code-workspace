@@ -221,7 +221,7 @@
 			{
 				"label": "Build mousehop binary (release)",
 				"type": "shell",
-				"command": "host=$(rustc -vV | awk '/^host:/{print $2}'); case \"$host\" in aarch64-*) p=\"${HOMEBREW_PREFIX:-/opt/homebrew}\";; x86_64-*) p=\"${HOMEBREW_PREFIX:-/usr/local}\";; *) echo \"unsupported rustc host: $host\" >&2; exit 1;; esac; export LIBRARY_PATH=\"$p/lib${LIBRARY_PATH:+:$LIBRARY_PATH}\" PKG_CONFIG_PATH=\"$p/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}\" PATH=\"$p/bin:$PATH\"; cargo build -p mousehop --release",
+				"command": "export PATH=\"${CARGO_HOME:-$HOME/.cargo}/bin:$PATH\"; host=$(rustc -vV | awk '/^host:/{print $2}'); case \"$host\" in aarch64-*) p=/opt/homebrew;; x86_64-*) p=/usr/local;; *) echo \"unsupported rustc host: $host\" >&2; exit 1;; esac; export LIBRARY_PATH=\"$p/lib\" PKG_CONFIG_PATH=\"$p/lib/pkgconfig\" PATH=\"${CARGO_HOME:-$HOME/.cargo}/bin:$p/bin:$PATH\"; cargo build -p mousehop --release",
 				"options": {
 					"cwd": "${workspaceFolder}"
 				},

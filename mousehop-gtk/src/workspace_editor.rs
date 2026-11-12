@@ -4,7 +4,7 @@
 //! Daemon owns validation, persistence, and peer sync.
 
 use adw::prelude::*;
-use gtk::prelude::*;
+use gtk::glib;
 use gtk::{Orientation, SpinButton};
 use mousehop_ipc::{FrontendRequest, WorkspaceIpc, WorkspacePlacementIpc};
 use std::cell::RefCell;
