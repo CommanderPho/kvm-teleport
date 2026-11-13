@@ -610,7 +610,11 @@ the switch is off.
 Choose Control, Alt/Option, Shift, or Super/Command/Windows in the GUI. The
 equivalent `[[clients]]` settings are `require_crossing_modifier = true` and
 `crossing_modifier = "control"`, `"alt"`, `"shift"`, or `"super"`. The
-default is off, so existing clients retain automatic edge crossing.
+default is off, so existing clients retain automatic edge crossing. On
+Windows (and other backends that steal input while capturing), held gate
+modifiers are released locally for the duration of capture so the host OS
+does not keep them stuck after a swallowed key-up, then restored on return
+if they are still physically held.
 
 ### Multi-homed peers (interfaces, latency, locking)
 

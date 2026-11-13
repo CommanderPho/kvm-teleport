@@ -666,6 +666,23 @@ struct PendingHandover {
 struct PendingCross {
     handle: CaptureHandle,
     begin: CaptureEvent,
+    /// Snapshot Key / Modifiers events observed while waiting for a
+    /// conclusive gate decision. Replayed on Accept so the peer receives
+    /// held-modifier downs that arrived before the accepting event.
+    buffered: Vec<CaptureEvent>,
+}
+
+/// Events to forward once the crossing gate accepts, in wire order.
+fn pending_cross_replay(
+    pending: PendingCross,
+    accepting: CaptureEvent,
+) -> Vec<(CaptureHandle, CaptureEvent)> {
+    let handle = pending.handle;
+    let mut events = Vec::with_capacity(pending.buffered.len() + 2);
+    events.push((handle, pending.begin));
+    events.extend(pending.buffered.into_iter().map(|event| (handle, event)));
+    events.push((handle, accepting));
+    events
 }
 
 impl PendingHandover {
@@ -1584,9 +1601,11 @@ impl CaptureTask {
             match crossing_gate_decision(required, modifier_held, capture_event) {
                 CrossingGateDecision::Accept => {
                     log::debug!("crossing modifier accepted for client {}", pending.handle);
-                    self.handle_accepted_capture_event(capture, (pending.handle, pending.begin))
-                        .await?;
-                    return self.handle_accepted_capture_event(capture, event).await;
+                    for replayed in pending_cross_replay(pending, capture_event.clone()) {
+                        self.handle_accepted_capture_event(capture, replayed)
+                            .await?;
+                    }
+                    return Ok(());
                 }
                 CrossingGateDecision::Reject => {
                     log::info!(
@@ -1602,7 +1621,10 @@ impl CaptureTask {
 
             // Held-key snapshots are a short sequence of Key events followed
             // by one aggregate Modifiers event. Keep waiting so a non-required
-            // modifier sent first cannot incorrectly reject a later match.
+            // modifier sent first cannot incorrectly reject a later match —
+            // and buffer those keys so Accept can still forward them.
+            let mut pending = pending;
+            pending.buffered.push(capture_event.clone());
             self.pending_cross = Some(pending);
             return Ok(());
         }
@@ -1616,6 +1638,7 @@ impl CaptureTask {
                     self.pending_cross = Some(PendingCross {
                         handle: *handle,
                         begin: capture_event.clone(),
+                        buffered: Vec::new(),
                     });
                     return Ok(());
                 }
@@ -2595,6 +2618,66 @@ mod command_ctrl_tests {
             crossing_gate_decision(None, false, &key),
             CrossingGateDecision::Accept
         );
+    }
+
+    #[test]
+    fn pending_cross_replays_buffered_keys_when_modifiers_accept() {
+        let begin = CaptureEvent::Begin {
+            cursor: None,
+            normalized_cursor: None,
+            outbound: None,
+        };
+        let shift_down = CaptureEvent::Input(key(KeyLeftShift, 1));
+        let ctrl_down = CaptureEvent::Input(key(KeyLeftCtrl, 1));
+        let mods = CaptureEvent::Input(modifiers(CONTROL_MASK | SHIFT_MASK));
+
+        assert_eq!(
+            crossing_gate_decision(Some(CrossingModifier::Control), false, &shift_down),
+            CrossingGateDecision::WaitForSnapshot
+        );
+
+        let mut pending = PendingCross {
+            handle: 7,
+            begin: begin.clone(),
+            buffered: Vec::new(),
+        };
+        pending.buffered.push(shift_down.clone());
+        pending.buffered.push(ctrl_down.clone());
+
+        assert_eq!(
+            crossing_gate_decision(Some(CrossingModifier::Control), true, &mods),
+            CrossingGateDecision::Accept
+        );
+
+        let replay = pending_cross_replay(pending, mods.clone());
+        assert_eq!(
+            replay,
+            vec![(7, begin), (7, shift_down), (7, ctrl_down), (7, mods),]
+        );
+    }
+
+    #[test]
+    fn pending_cross_reject_discards_buffer_without_replay() {
+        let begin = CaptureEvent::Begin {
+            cursor: None,
+            normalized_cursor: None,
+            outbound: None,
+        };
+        let shift_down = CaptureEvent::Input(key(KeyLeftShift, 1));
+        let mods = CaptureEvent::Input(modifiers(SHIFT_MASK));
+
+        let mut pending = PendingCross {
+            handle: 3,
+            begin,
+            buffered: vec![shift_down],
+        };
+        assert_eq!(
+            crossing_gate_decision(Some(CrossingModifier::Control), false, &mods),
+            CrossingGateDecision::Reject
+        );
+        // Reject path drops `pending` without calling pending_cross_replay.
+        pending.buffered.clear();
+        assert!(pending.buffered.is_empty());
     }
 
     #[test]

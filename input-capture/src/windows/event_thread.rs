@@ -1,5 +1,6 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
+use std::ops::BitOrAssign;
 use std::ptr::addr_of_mut;
 
 use std::default::Default;
@@ -20,15 +21,19 @@ use windows::Win32::System::RemoteDesktop::{
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::core::{PCWSTR, w};
 
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_EXTENDEDKEY, KEYEVENTF_KEYUP,
+    KEYEVENTF_SCANCODE, SendInput,
+};
 use windows::Win32::UI::WindowsAndMessaging::{
     CallNextHookEx, CreateWindowExW, DispatchMessageW, EDD_GET_DEVICE_INTERFACE_NAME, GetMessageW,
-    HHOOK, KBDLLHOOKSTRUCT, KillTimer, LLKHF_EXTENDED, MSG, MSLLHOOKSTRUCT, PostThreadMessageW,
-    RegisterClassW, SetTimer, SetWindowsHookExW, TranslateMessage, UnhookWindowsHookEx,
-    WH_KEYBOARD_LL, WH_MOUSE_LL, WINDOW_STYLE, WM_DISPLAYCHANGE, WM_KEYDOWN, WM_KEYUP,
-    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL, WM_MOUSEMOVE,
-    WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER, WM_USER,
-    WM_WTSSESSION_CHANGE, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WNDPROC, WTS_SESSION_LOCK,
-    WTS_SESSION_UNLOCK,
+    HHOOK, KBDLLHOOKSTRUCT, KillTimer, LLKHF_EXTENDED, LLKHF_INJECTED, MSG, MSLLHOOKSTRUCT,
+    PostThreadMessageW, RegisterClassW, SetTimer, SetWindowsHookExW, TranslateMessage,
+    UnhookWindowsHookEx, WH_KEYBOARD_LL, WH_MOUSE_LL, WINDOW_STYLE, WM_DISPLAYCHANGE, WM_KEYDOWN,
+    WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEHWHEEL,
+    WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_RBUTTONDOWN, WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    WM_TIMER, WM_USER, WM_WTSSESSION_CHANGE, WM_XBUTTONDOWN, WM_XBUTTONUP, WNDCLASSW, WNDPROC,
+    WTS_SESSION_LOCK, WTS_SESSION_UNLOCK,
 };
 
 use input_event::{
@@ -113,6 +118,21 @@ enum ClientUpdate {
 const HOOK_WATCHDOG_TIMER: usize = 1;
 /// How often the watchdog checks that the hooks are still live.
 const HOOK_WATCHDOG_INTERVAL_MS: u32 = 3000;
+/// `KEYBDINPUT::dwExtraInfo` tag for host-modifier steal/restore injections.
+/// The keyboard hook must pass these through to the OS without mutating
+/// [`HOST_MODIFIERS`] or forwarding them to the peer.
+const HOST_MODIFIER_INJECT_EXTRA: usize = 0x4D485F4D; // 'MH_M'
+
+const ORDERED_HOST_MODIFIERS: [Linux; 8] = [
+    Linux::KeyLeftShift,
+    Linux::KeyRightShift,
+    Linux::KeyLeftCtrl,
+    Linux::KeyRightCtrl,
+    Linux::KeyLeftAlt,
+    Linux::KeyRightalt,
+    Linux::KeyLeftMeta,
+    Linux::KeyRightmeta,
+];
 
 fn try_send_event(
     pos: Position,
@@ -302,6 +322,9 @@ fn start_routine(
                 x if x == RequestType::Exit as usize => break,
                 x if x == RequestType::Release as usize => {
                     ACTIVE_CLIENT.take();
+                    // Re-press any modifiers still physically held so the
+                    // local OS matches the keyboard again after steal-on-enter.
+                    restore_host_modifiers_to_os();
                 }
                 x if x == RequestType::ClientUpdate as usize => {
                     let requests = {
@@ -464,6 +487,11 @@ fn check_client_activation(wparam: WPARAM, lparam: LPARAM) -> bool {
             log::error!("forwarding channel full — dropped modifier snapshot: {e}");
         }
     }
+    // Ctrl (or any other gate modifier) was delivered to the local OS
+    // before capture. Subsequent key-ups are swallowed by the hook, so
+    // release them synthetically now; restore_host_modifiers_to_os puts
+    // still-held keys back when capture ends.
+    steal_host_modifiers_from_os();
 
     ret
 }
@@ -498,6 +526,14 @@ unsafe extern "system" fn mouse_proc(ncode: i32, wparam: WPARAM, lparam: LPARAM)
 
 unsafe extern "system" fn kybrd_proc(ncode: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     HOOK_FIRED.store(true, Ordering::Relaxed);
+    let kb: KBDLLHOOKSTRUCT = unsafe { *(lparam.0 as *const KBDLLHOOKSTRUCT) };
+    // Steal/restore injections (and any other injected keys) must reach the
+    // OS but must not mutate physical HOST_MODIFIERS tracking or be forwarded
+    // to the peer — otherwise restore KEYDOWNs clear tracking / feedback.
+    if keyboard_event_is_injected(&kb) {
+        return CallNextHookEx(None, ncode, wparam, lparam);
+    }
+
     /* convert to key event */
     let Some(key_event) = to_key_event(wparam, lparam) else {
         return CallNextHookEx(None, ncode, wparam, lparam);
@@ -552,6 +588,10 @@ unsafe extern "system" fn window_proc(
     LRESULT(1)
 }
 
+fn keyboard_event_is_injected(kb: &KBDLLHOOKSTRUCT) -> bool {
+    kb.flags.contains(LLKHF_INJECTED) || kb.dwExtraInfo == HOST_MODIFIER_INJECT_EXTRA
+}
+
 fn update_host_modifier_state(event: &KeyboardEvent) {
     let KeyboardEvent::Key { key, state, .. } = event else {
         return;
@@ -581,26 +621,23 @@ fn update_host_modifier_state(event: &KeyboardEvent) {
     });
 }
 
+/// Deterministic steal/restore order for held momentary modifiers.
+fn ordered_held_modifiers(pressed: &HashSet<Linux>) -> Vec<Linux> {
+    ORDERED_HOST_MODIFIERS
+        .into_iter()
+        .filter(|key| pressed.contains(key))
+        .collect()
+}
+
 fn host_modifier_snapshot() -> Vec<CaptureEvent> {
     const SHIFT_MASK: u32 = 1 << 0;
     const CONTROL_MASK: u32 = 1 << 2;
     const ALT_MASK: u32 = 1 << 3;
     const SUPER_MASK: u32 = 1 << 6;
-    const ORDERED_MODIFIERS: [Linux; 8] = [
-        Linux::KeyLeftShift,
-        Linux::KeyRightShift,
-        Linux::KeyLeftCtrl,
-        Linux::KeyRightCtrl,
-        Linux::KeyLeftAlt,
-        Linux::KeyRightalt,
-        Linux::KeyLeftMeta,
-        Linux::KeyRightmeta,
-    ];
 
     HOST_MODIFIERS.with_borrow(|pressed| {
-        let mut events = ORDERED_MODIFIERS
+        let mut events = ordered_held_modifiers(pressed)
             .into_iter()
-            .filter(|key| pressed.contains(key))
             .map(|key| {
                 CaptureEvent::Input(Event::Keyboard(KeyboardEvent::Key {
                     time: 0,
@@ -629,6 +666,68 @@ fn host_modifier_snapshot() -> Vec<CaptureEvent> {
         )));
         events
     })
+}
+
+fn linux_to_windows_scan(key: Linux) -> Option<(u16, bool)> {
+    let windows_scancode = scancode::Windows::try_from(key).ok()?;
+    let code = windows_scancode as u16;
+    let extended = code > 0xff;
+    Some((code & 0xff, extended))
+}
+
+fn inject_host_modifier_key(key: Linux, press: bool) {
+    let Some((scan, extended)) = linux_to_windows_scan(key) else {
+        log::warn!("unable to map host modifier {key:?} for local injection");
+        return;
+    };
+    let mut flags = KEYEVENTF_SCANCODE;
+    if extended {
+        flags.bitor_assign(KEYEVENTF_EXTENDEDKEY);
+    }
+    if !press {
+        flags.bitor_assign(KEYEVENTF_KEYUP);
+    }
+    let input = INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: Default::default(),
+                wScan: scan,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: HOST_MODIFIER_INJECT_EXTRA,
+            },
+        },
+    };
+    let sent = unsafe { SendInput(&[input], std::mem::size_of::<INPUT>() as i32) };
+    if sent == 0 {
+        log::warn!(
+            "SendInput failed while {} host modifier {key:?}",
+            if press { "restoring" } else { "releasing" }
+        );
+    }
+}
+
+fn steal_host_modifiers_from_os() {
+    let keys = HOST_MODIFIERS.with_borrow(ordered_held_modifiers);
+    if keys.is_empty() {
+        return;
+    }
+    log::debug!("releasing held host modifiers for capture: {keys:?}");
+    for key in keys {
+        inject_host_modifier_key(key, false);
+    }
+}
+
+fn restore_host_modifiers_to_os() {
+    let keys = HOST_MODIFIERS.with_borrow(ordered_held_modifiers);
+    if keys.is_empty() {
+        return;
+    }
+    log::debug!("restoring still-held host modifiers after capture: {keys:?}");
+    for key in keys {
+        inject_host_modifier_key(key, true);
+    }
 }
 
 fn host_modifier_held(modifier: CrossingModifier) -> bool {
@@ -840,5 +939,51 @@ fn to_mouse_event(wparam: WPARAM, lparam: LPARAM) -> Option<PointerEvent> {
             log::warn!("unknown mouse event: {w:?}");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod host_modifier_tests {
+    use super::*;
+
+    #[test]
+    fn ordered_held_modifiers_lists_only_pressed_keys_in_stable_order() {
+        let mut pressed = HashSet::new();
+        pressed.insert(Linux::KeyRightCtrl);
+        pressed.insert(Linux::KeyLeftShift);
+        assert_eq!(
+            ordered_held_modifiers(&pressed),
+            vec![Linux::KeyLeftShift, Linux::KeyRightCtrl]
+        );
+    }
+
+    #[test]
+    fn steal_and_restore_operate_on_the_same_physically_held_set() {
+        let mut pressed = HashSet::new();
+        pressed.insert(Linux::KeyLeftCtrl);
+        let steal = ordered_held_modifiers(&pressed);
+        assert_eq!(steal, vec![Linux::KeyLeftCtrl]);
+
+        // User released Ctrl while capture was active — physical set clears.
+        pressed.remove(&Linux::KeyLeftCtrl);
+        assert!(ordered_held_modifiers(&pressed).is_empty());
+
+        // Still holding after return — restore re-presses locally.
+        pressed.insert(Linux::KeyLeftCtrl);
+        assert_eq!(ordered_held_modifiers(&pressed), vec![Linux::KeyLeftCtrl]);
+    }
+
+    #[test]
+    fn injection_tag_is_recognized_as_injected() {
+        let mut kb: KBDLLHOOKSTRUCT = unsafe { std::mem::zeroed() };
+        kb.dwExtraInfo = HOST_MODIFIER_INJECT_EXTRA;
+        assert!(keyboard_event_is_injected(&kb));
+
+        kb.dwExtraInfo = 0;
+        kb.flags = LLKHF_INJECTED;
+        assert!(keyboard_event_is_injected(&kb));
+
+        kb.flags = Default::default();
+        assert!(!keyboard_event_is_injected(&kb));
     }
 }
