@@ -216,7 +216,7 @@
 					"panel": "shared",
 					"focus": false
 				},
-				"detail": "Icon → cargo bundle --release → vendor Homebrew dylibs → Mousehop.app"
+				"detail": "Icon → cargo bundle --release → vendor Homebrew dylibs → MousehopDev.app"
 			},
 			{
 				"label": "Build mousehop binary (release)",

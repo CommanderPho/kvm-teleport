@@ -53,4 +53,10 @@ binary="$app/Contents/MacOS/mousehop"
 echo "==> vendoring dylibs into $app"
 scripts/copy-macos-dylib.sh "$binary"
 
+dev_app="MousehopDev.app"
+echo "==> copying to $root/$dev_app"
+rm -rf "$dev_app"
+cp -R "$app" "$dev_app"
+
 echo "==> done: $root/$app"
+echo "==> done: $root/$dev_app"
