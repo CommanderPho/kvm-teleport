@@ -247,17 +247,36 @@
                       <object class="AdwPreferencesGroup">
                         <property name="title" translatable="yes">Outgoing Connections</property>
                         <property name="header-suffix">
-                          <object class="GtkButton">
-                            <signal name="clicked" handler="handle_add_client_pressed" swapped="true"/>
-                            <property name="child">
-                              <object class="AdwButtonContent">
-                                <property name="icon-name">list-add-symbolic</property>
-                                <property name="label" translatable="yes">Add</property>
+                          <object class="GtkBox">
+                            <property name="spacing">4</property>
+                            <child>
+                              <object class="GtkButton" id="shared_layout_button">
+                                <signal name="clicked" handler="handle_shared_layout_pressed" swapped="true"/>
+                                <property name="child">
+                                  <object class="AdwButtonContent">
+                                    <property name="icon-name">view-grid-symbolic</property>
+                                    <property name="label" translatable="yes">Shared layout…</property>
+                                  </object>
+                                </property>
+                                <style>
+                                  <class name="flat"/>
+                                </style>
                               </object>
-                            </property>
-                          <style>
-                            <class name="flat"/>
-                          </style>
+                            </child>
+                            <child>
+                              <object class="GtkButton">
+                                <signal name="clicked" handler="handle_add_client_pressed" swapped="true"/>
+                                <property name="child">
+                                  <object class="AdwButtonContent">
+                                    <property name="icon-name">list-add-symbolic</property>
+                                    <property name="label" translatable="yes">Add</property>
+                                  </object>
+                                </property>
+                                <style>
+                                  <class name="flat"/>
+                                </style>
+                              </object>
+                            </child>
                           </object>
                         </property>
                         <child>

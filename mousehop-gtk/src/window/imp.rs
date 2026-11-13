@@ -9,7 +9,7 @@ use gtk::{
     Label, ListBox, PropagationPhase, Scale, ScrolledWindow, Switch, gdk, gio, glib,
 };
 
-use mousehop_ipc::{DEFAULT_PORT, FrontendRequestWriter, WorkspaceIpc};
+use mousehop_ipc::{DEFAULT_PORT, FrontendRequest, FrontendRequestWriter, WorkspaceIpc};
 
 use crate::authorization_window::AuthorizationWindow;
 use crate::clipboard_privacy_window::ClipboardPrivacyWindow;
@@ -28,6 +28,8 @@ pub struct Window {
     pub port_edit_cancel: TemplateChild<Button>,
     #[template_child]
     pub client_list: TemplateChild<ListBox>,
+    #[template_child]
+    pub shared_layout_button: TemplateChild<Button>,
     #[template_child]
     pub client_placeholder: TemplateChild<ActionRow>,
     #[template_child]
@@ -133,6 +135,13 @@ impl ObjectSubclass for Window {
 
 #[gtk::template_callbacks]
 impl Window {
+    #[template_callback]
+    fn handle_shared_layout_pressed(&self, _button: &Button) {
+        let window = self.obj();
+        window.request(FrontendRequest::GetWorkspace);
+        window.open_workspace_editor();
+    }
+
     #[template_callback]
     fn handle_add_client_pressed(&self, _button: &Button) {
         self.obj().request_client_create();

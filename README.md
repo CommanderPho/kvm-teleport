@@ -577,11 +577,14 @@ Where `left` can be either `left`, `right`, `top` or `bottom`.
 
 ### Shared spatial layout (per-monitor)
 
-For Teleport-style placement of **individual monitors** across peers, see
-[SHARED_LAYOUT.md](SHARED_LAYOUT.md). Configuration lives in `workspace.toml`
-beside `config.toml`; the GTK **About → build** row opens the layout editor.
-Peers without the shared-workspace capability keep the four-edge `position`
-model above. Manual Win/macOS checks:
+For Teleport-style placement of each machine’s **rigid monitor set** in
+shared continuous X/Y space, see [SHARED_LAYOUT.md](SHARED_LAYOUT.md).
+Configuration lives in `workspace.toml` beside `config.toml`. Open the GTK
+planner from **Outgoing Connections → Shared layout…** (also About → build).
+Authority drags host groups (not individual monitors); followers are
+view-only. Peers placed in the workspace disable that row’s legacy
+`position` combo. Peers without the shared-workspace capability keep the
+four-edge `position` model above. Manual Win/macOS checks:
 [docs/manual-spatial-checklist.md](docs/manual-spatial-checklist.md).
 
 ### macOS Command as Control

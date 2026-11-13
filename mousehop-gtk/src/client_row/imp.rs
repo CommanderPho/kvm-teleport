@@ -331,6 +331,17 @@ impl ClientRow {
         self.position.unblock_signal(handler);
     }
 
+    pub(super) fn set_position_managed(&self, managed: bool) {
+        self.position.set_sensitive(!managed);
+        if managed {
+            self.position
+                .set_subtitle("Managed by shared workspace layout");
+        } else {
+            self.position
+                .set_subtitle("Where this device sits relative to your screen.");
+        }
+    }
+
     pub(super) fn set_active(&self, active: bool) {
         let handler = self.set_state_handler.borrow();
         let handler = handler.as_ref().expect("signal handler");

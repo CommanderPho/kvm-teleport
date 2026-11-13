@@ -259,6 +259,11 @@ impl ClientRow {
         self.imp().set_pos(pos);
     }
 
+    /// When the peer is placed in a shared workspace, disable legacy Position.
+    pub fn set_position_managed(&self, managed: bool) {
+        self.imp().set_position_managed(managed);
+    }
+
     pub fn set_dns_state(&self, resolved: bool) {
         self.imp().set_dns_state(resolved);
     }
