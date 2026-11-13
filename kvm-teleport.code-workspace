@@ -261,6 +261,45 @@
 					"focus": false
 				},
 				"detail": "README Windows §3–4: GTK env + pkgconf check → cargo build -p mousehop --release → stage exe+DLLs under target/release/mousehop-windows/"
+			},
+			{
+				"label": "Build mousehop (current platform)",
+				"type": "shell",
+				"command": "cargo build -p mousehop --release",
+				"windows": {
+					"command": "scripts/build-windows-release.ps1",
+					"options": {
+						"cwd": "${workspaceFolder}",
+						"shell": {
+							"executable": "powershell.exe",
+							"args": [
+								"-NoProfile",
+								"-ExecutionPolicy",
+								"Bypass",
+								"-File"
+							]
+						}
+					}
+				},
+				"osx": {
+					"command": "scripts/build-macos-release.sh",
+					"options": {
+						"cwd": "${workspaceFolder}"
+					}
+				},
+				"options": {
+					"cwd": "${workspaceFolder}"
+				},
+				"group": "build",
+				"problemMatcher": [
+					"$rustc"
+				],
+				"presentation": {
+					"reveal": "always",
+					"panel": "shared",
+					"focus": false
+				},
+				"detail": "Host OS release: Windows exe staging, macOS .app, else cargo build -p mousehop --release"
 			}
 		]
 	}
