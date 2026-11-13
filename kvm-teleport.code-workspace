@@ -234,6 +234,33 @@
 					"panel": "shared"
 				},
 				"detail": "target/release/mousehop (no .app bundle)"
+			},
+			{
+				"label": "Build mousehop.exe (release)",
+				"type": "shell",
+				"command": "scripts/build-windows-release.ps1",
+				"options": {
+					"cwd": "${workspaceFolder}",
+					"shell": {
+						"executable": "powershell.exe",
+						"args": [
+							"-NoProfile",
+							"-ExecutionPolicy",
+							"Bypass",
+							"-File"
+						]
+					}
+				},
+				"group": "build",
+				"problemMatcher": [
+					"$rustc"
+				],
+				"presentation": {
+					"reveal": "always",
+					"panel": "shared",
+					"focus": false
+				},
+				"detail": "README Windows §3–4: GTK env + pkgconf check → cargo build -p mousehop --release → stage exe+DLLs under target/release/mousehop-windows/"
 			}
 		]
 	}
