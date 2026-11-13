@@ -272,6 +272,28 @@ pub(crate) enum EmulationEvent {
         from_fingerprint: String,
         content: String,
     },
+    /// Local monitor topology refreshed (for workspace IPC / routing).
+    LocalTopology {
+        topology: input_event::workspace::LocalTopology,
+    },
+    /// Peer advertised an identified topology over the listen path.
+    PeerTopology {
+        fingerprint: String,
+        topology: input_event::workspace::LocalTopology,
+    },
+    /// Peer capabilities learned from inbound Hello.
+    PeerCapabilities {
+        fingerprint: String,
+        capabilities: u32,
+    },
+    /// Authority workspace chunk arrived on the listen path.
+    WorkspaceChunk {
+        fingerprint: String,
+        revision: u64,
+        index: u8,
+        count: u8,
+        data: Vec<u8>,
+    },
 }
 
 enum EmulationRequest {
@@ -287,6 +309,14 @@ enum EmulationRequest {
     /// change, and whenever the user adjusts a peer's natural-scroll
     /// or sensitivity from the GUI.
     SetIncomingPeers(HashMap<String, IncomingPeerConfig>),
+    /// Send protocol events to every inbound peer that negotiated
+    /// [`CAP_SHARED_WORKSPACE`].
+    BroadcastProto(Vec<ProtoEvent>),
+    /// Reply to the inbound peer matching `fingerprint` (if connected).
+    ReplyProto {
+        fingerprint: String,
+        event: ProtoEvent,
+    },
     Terminate,
 }
 
@@ -351,6 +381,18 @@ impl Emulation {
         self.request_tx
             .send(EmulationRequest::SetIncomingPeers(peers))
             .expect("channel closed")
+    }
+
+    pub(crate) fn broadcast_proto(&self, events: Vec<ProtoEvent>) {
+        let _ = self
+            .request_tx
+            .send(EmulationRequest::BroadcastProto(events));
+    }
+
+    pub(crate) fn reply_proto_to_fingerprint(&self, fingerprint: String, event: ProtoEvent) {
+        let _ = self
+            .request_tx
+            .send(EmulationRequest::ReplyProto { fingerprint, event });
     }
 
     pub(crate) async fn event(&mut self) -> EmulationEvent {
@@ -427,6 +469,7 @@ impl ListenTask {
         layout: Option<DisplayLayout>,
         topology_epoch: u64,
         topology_generation: u32,
+        shared_workspace: bool,
     ) -> bool {
         if !self.session_is_current(addr, session) {
             return false;
@@ -457,7 +500,7 @@ impl ListenTask {
                     addr,
                     session,
                     ProtoEvent::display_layout_generation(
-                        layout,
+                        layout.clone(),
                         topology_epoch,
                         topology_generation,
                     ),
@@ -465,6 +508,28 @@ impl ListenTask {
                 .await;
             if !self.session_is_current(addr, session) {
                 return false;
+            }
+            if shared_workspace {
+                if let Ok(topology) = input_event::workspace::LocalTopology::from_display_layout(
+                    &layout,
+                    topology_epoch,
+                    topology_generation,
+                ) {
+                    self.listener
+                        .reply(
+                            addr,
+                            session,
+                            ProtoEvent::IdentifiedTopology {
+                                epoch: topology_epoch,
+                                generation: topology_generation,
+                                topology,
+                            },
+                        )
+                        .await;
+                    if !self.session_is_current(addr, session) {
+                        return false;
+                    }
+                }
             }
         }
         true
@@ -550,6 +615,7 @@ impl ListenTask {
                                         layout,
                                         topology_epoch,
                                         topology_generation,
+                                    peer_capabilities.get(&(addr, session)).is_some_and(|c| c & CAP_SHARED_WORKSPACE != 0),
                                     ).await {
                                         continue;
                                     }
@@ -617,6 +683,7 @@ impl ListenTask {
                                                 layout,
                                                 topology_epoch,
                                                 completed.topology_generation,
+                                            peer_capabilities.get(&(addr, session)).is_some_and(|c| c & CAP_SHARED_WORKSPACE != 0),
                                             )
                                             .await
                                         {
@@ -689,6 +756,7 @@ impl ListenTask {
                                         layout,
                                         topology_epoch,
                                         topology_generation,
+                                    peer_capabilities.get(&(addr, session)).is_some_and(|c| c & CAP_SHARED_WORKSPACE != 0),
                                     )
                                     .await
                                 {
@@ -775,6 +843,7 @@ impl ListenTask {
                                                 layout,
                                                 topology_epoch,
                                                 completed.topology_generation,
+                                            peer_capabilities.get(&(addr, session)).is_some_and(|c| c & CAP_SHARED_WORKSPACE != 0),
                                             )
                                             .await
                                         {
@@ -872,6 +941,7 @@ impl ListenTask {
                                     layout,
                                     topology_epoch,
                                     topology_generation,
+                                peer_capabilities.get(&(addr, session)).is_some_and(|c| c & CAP_SHARED_WORKSPACE != 0),
                                 ).await {
                                     continue;
                                 }
@@ -1108,6 +1178,56 @@ impl ListenTask {
                                 peer_capabilities.insert((addr, session), capabilities);
                                 self.listener.reply(addr, session, ProtoEvent::hello(local_commit())).await;
                                 self.event_tx.send(EmulationEvent::PeerHello { addr, commit }).expect("channel closed");
+                                if let Some(fingerprint) = self
+                                    .listener
+                                    .get_certificate_fingerprint(addr, session)
+                                    .await
+                                {
+                                    let _ = self.event_tx.send(EmulationEvent::PeerCapabilities {
+                                        fingerprint,
+                                        capabilities,
+                                    });
+                                }
+                            }
+                            ProtoEvent::IdentifiedTopology {
+                                topology,
+                                ..
+                            } => {
+                                if let Some(fingerprint) = self
+                                    .listener
+                                    .get_certificate_fingerprint(addr, session)
+                                    .await
+                                {
+                                    let _ = self.event_tx.send(EmulationEvent::PeerTopology {
+                                        fingerprint,
+                                        topology,
+                                    });
+                                }
+                            }
+                            ProtoEvent::WorkspaceChunk {
+                                revision,
+                                index,
+                                count,
+                                data,
+                            } => {
+                                if let Some(fingerprint) = self
+                                    .listener
+                                    .get_certificate_fingerprint(addr, session)
+                                    .await
+                                {
+                                    let _ = self.event_tx.send(EmulationEvent::WorkspaceChunk {
+                                        fingerprint,
+                                        revision,
+                                        index,
+                                        count,
+                                        data,
+                                    });
+                                }
+                            }
+                            ProtoEvent::WorkspaceAck { revision } => {
+                                log::debug!(
+                                    "workspace ack revision {revision} from {addr} session {session}"
+                                );
                             }
                             // Capturing peer told us where on its own
                             // screen the user's cursor was, as a
@@ -1269,6 +1389,33 @@ impl ListenTask {
                         let result = self.listener.port_changed().await;
                         self.event_tx.send(EmulationEvent::PortChanged(result)).expect("channel closed");
                     }
+                    EmulationRequest::BroadcastProto(events) => {
+                        let targets: Vec<(SocketAddr, ListenerSession)> = last_response
+                            .iter()
+                            .filter_map(|(&addr, &(session, _))| {
+                                peer_capabilities
+                                    .get(&(addr, session))
+                                    .is_some_and(|c| c & CAP_SHARED_WORKSPACE != 0)
+                                    .then_some((addr, session))
+                            })
+                            .collect();
+                        for (addr, session) in targets {
+                            for event in &events {
+                                self.listener.reply(addr, session, event.clone()).await;
+                            }
+                        }
+                    }
+                    EmulationRequest::ReplyProto { fingerprint, event } => {
+                        if let Some((&addr, _)) = self
+                            .addr_to_fingerprint
+                            .iter()
+                            .find(|(_, fp)| fp.as_str() == fingerprint.as_str())
+                        {
+                            if let Some(session) = self.listener.current_session(addr) {
+                                self.listener.reply(addr, session, event).await;
+                            }
+                        }
+                    }
                     EmulationRequest::SetIncomingPeers(peers) => {
                         self.incoming_peers = peers;
                         // Re-resolve every known address so the live
@@ -1407,7 +1554,7 @@ impl ListenTask {
                             self.listener.reply(addr, session, ProtoEvent::Bounds { width, height }).await;
                         }
                     }
-                    if let Some(layout) = layout {
+                    if let Some(layout) = layout.clone() {
                         for (addr, session) in addrs {
                             self.listener.reply(
                                 addr,
@@ -1418,6 +1565,41 @@ impl ListenTask {
                                     topology_generation,
                                 ),
                             ).await;
+                            let shared = peer_capabilities
+                                .get(&(addr, session))
+                                .is_some_and(|c| c & CAP_SHARED_WORKSPACE != 0);
+                            if shared {
+                                if let Ok(topology) =
+                                    input_event::workspace::LocalTopology::from_display_layout(
+                                        &layout,
+                                        topology_epoch,
+                                        topology_generation,
+                                    )
+                                {
+                                    self.listener
+                                        .reply(
+                                            addr,
+                                            session,
+                                            ProtoEvent::IdentifiedTopology {
+                                                epoch: topology_epoch,
+                                                generation: topology_generation,
+                                                topology,
+                                            },
+                                        )
+                                        .await;
+                                }
+                            }
+                        }
+                    }
+                    if let Some(layout) = layout {
+                        if let Ok(topology) =
+                            input_event::workspace::LocalTopology::from_display_layout(
+                                &layout,
+                                topology_epoch,
+                                topology_generation,
+                            )
+                        {
+                            let _ = self.event_tx.send(EmulationEvent::LocalTopology { topology });
                         }
                     }
                 }

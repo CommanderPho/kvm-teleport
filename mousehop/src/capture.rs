@@ -67,6 +67,24 @@ pub(crate) enum ICaptureEvent {
     /// fires later but reliably, so it carries the broadcast as a
     /// belt-and-suspenders fallback.
     PeerCommitUpdated(CaptureHandle),
+    /// Outbound peer Hello capabilities (for shared-workspace gating).
+    PeerCapabilities {
+        handle: CaptureHandle,
+        capabilities: u32,
+    },
+    /// Outbound peer identified topology.
+    PeerTopology {
+        handle: CaptureHandle,
+        topology: input_event::workspace::LocalTopology,
+    },
+    /// Authority workspace chunk on the outbound path.
+    WorkspaceChunk {
+        handle: CaptureHandle,
+        revision: u64,
+        index: u8,
+        count: u8,
+        data: Vec<u8>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1232,6 +1250,9 @@ impl CaptureTask {
                                     | ProtoEvent::HostInputStateAck { .. }
                                     | ProtoEvent::HandoverLeave { .. }
                                     | ProtoEvent::HandoverLeaveAck { .. }
+                                    | ProtoEvent::IdentifiedTopology { .. }
+                                    | ProtoEvent::WorkspaceChunk { .. }
+                                    | ProtoEvent::WorkspaceAck { .. }
                             )
                         {
                             // Capture events belong to the active client, but
@@ -1465,7 +1486,39 @@ impl CaptureTask {
                             self.event_tx
                                 .send(ICaptureEvent::PeerCommitUpdated(handle))
                                 .expect("channel closed");
+                            self.event_tx
+                                .send(ICaptureEvent::PeerCapabilities {
+                                    handle,
+                                    capabilities,
+                                })
+                                .expect("channel closed");
                             let _ = self.retry_lock_recovery_for(handle).await;
+                        }
+                        ProtoEvent::IdentifiedTopology { topology, .. } => {
+                            self.event_tx
+                                .send(ICaptureEvent::PeerTopology { handle, topology })
+                                .expect("channel closed");
+                        }
+                        ProtoEvent::WorkspaceChunk {
+                            revision,
+                            index,
+                            count,
+                            data,
+                        } => {
+                            self.event_tx
+                                .send(ICaptureEvent::WorkspaceChunk {
+                                    handle,
+                                    revision,
+                                    index,
+                                    count,
+                                    data,
+                                })
+                                .expect("channel closed");
+                        }
+                        ProtoEvent::WorkspaceAck { revision } => {
+                            log::debug!(
+                                "workspace ack revision {revision} from client {handle} session {session}"
+                            );
                         }
                         _ => {}
                     }

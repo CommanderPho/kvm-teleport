@@ -36,10 +36,13 @@ pub enum WorkspaceStateError {
     #[error("stale workspace revision {got} (have {have})")]
     StaleRevision { got: u64, have: u64 },
     #[error("workspace revision conflict: incoming {incoming} vs local {local}")]
+    #[allow(dead_code)]
     RevisionConflict { incoming: u64, local: u64 },
     #[error("invalid workspace payload")]
     InvalidPayload,
 }
+
+type PendingChunkParts = Vec<(u8, u8, Vec<u8>)>;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 struct TomlPlacement {
@@ -108,7 +111,7 @@ pub struct WorkspaceState {
     topologies: BTreeMap<PeerFingerprint, LocalTopology>,
     snapshot: Option<RoutingSnapshot>,
     /// Chunk reassembly keyed by publisher fingerprint + revision.
-    pending_chunks: HashMap<(String, u64), Vec<(u8, u8, Vec<u8>)>>,
+    pending_chunks: HashMap<(String, u64), PendingChunkParts>,
     /// Last accepted revision we have ACKed.
     last_acked_revision: Option<u64>,
 }
@@ -122,10 +125,12 @@ impl WorkspaceState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    #[allow(dead_code)]
     pub fn local_fingerprint(&self) -> &str {
         &self.local_fingerprint
     }
@@ -136,6 +141,11 @@ impl WorkspaceState {
 
     pub fn snapshot(&self) -> Option<&RoutingSnapshot> {
         self.snapshot.as_ref()
+    }
+
+    /// Live topologies keyed by peer fingerprint (local + peers).
+    pub fn topologies(&self) -> &BTreeMap<PeerFingerprint, LocalTopology> {
+        &self.topologies
     }
 
     pub fn is_authority(&self) -> bool {
@@ -230,6 +240,7 @@ impl WorkspaceState {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn remove_topology(&mut self, peer: &str) -> Result<(), WorkspaceStateError> {
         self.topologies.remove(peer);
         self.rebuild_snapshot()?;

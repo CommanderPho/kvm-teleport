@@ -25,7 +25,7 @@
 //! [`crate::display::DisplayLayout::exposed_segments`], which only builds the
 //! directional outer contour used by legacy KVM barriers.
 
-use crate::display::{DisplayEdge, DisplayRect};
+use crate::display::{DisplayEdge, DisplayLayout, DisplayRect};
 use std::collections::BTreeMap;
 use thiserror::Error;
 
@@ -117,6 +117,33 @@ impl LocalTopology {
         })
     }
 
+    /// Builds a topology from an anonymous [`DisplayLayout`].
+    ///
+    /// Display ids are content-based (`d{index}:{w}x{h}+{x}+{y}`) so they stay
+    /// stable across republish of the same geometry and never rely on
+    /// enumeration order alone after a hotplug (generation still bumps).
+    pub fn from_display_layout(
+        layout: &DisplayLayout,
+        epoch: u64,
+        generation: u32,
+    ) -> Result<Self, WorkspaceError> {
+        let mut displays = Vec::with_capacity(layout.len());
+        for (index, rect) in layout.rectangles() {
+            let (x, y) = rect.origin();
+            let (w, h) = rect.size();
+            let raw = format!("d{index}:{w}x{h}+{x}+{y}");
+            let id = DisplayId::new(raw.chars().take(MAX_DISPLAY_ID_LEN).collect::<String>())
+                .expect("content-based display id");
+            displays.push(LocalDisplay {
+                id,
+                rect,
+                scale: None,
+                rotation: None,
+            });
+        }
+        Self::try_new(displays, epoch, generation)
+    }
+
     /// Returns the display with the given id.
     pub fn display(&self, id: &DisplayId) -> Option<&LocalDisplay> {
         self.displays.iter().find(|d| d.id == *id)
@@ -190,11 +217,15 @@ pub struct BoundarySegment {
 
 impl BoundarySegment {
     pub fn len(&self) -> u32 {
-        if self.start >= self.end {
+        if self.is_empty() {
             0
         } else {
             (i64::from(self.end) - i64::from(self.start)) as u32
         }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.start >= self.end
     }
 
     pub fn contains_cross(&self, cross: i32) -> bool {

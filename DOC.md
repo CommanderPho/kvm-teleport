@@ -2,11 +2,13 @@
 
 ## Shared spatial layout
 
-See [SHARED_LAYOUT.md](SHARED_LAYOUT.md) for the Teleport-style per-monitor
-workspace model, authority/sync rules, protocol capability
-`CAP_SHARED_WORKSPACE`, and Win/macOS capture arming. Legacy whole-desktop
-`Position` placement remains the default when `workspace.toml` is absent or a
-peer lacks the capability.
+See [SHARED_LAYOUT.md](SHARED_LAYOUT.md) for the Teleport-style shared canvas:
+each host keeps OS monitor geometry; placement is one device-group origin in
+continuous X/Y; authority syncs via `IdentifiedTopology` + `WorkspaceChunk`;
+GTK planner under Outgoing Connections → Shared layout…. Capability bit
+`CAP_SHARED_WORKSPACE`; Win/macOS capture arming. Legacy whole-desktop
+`Position` remains the default when `workspace.toml` is absent or a peer
+lacks the capability.
 
 
 ## Events

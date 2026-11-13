@@ -545,8 +545,30 @@ impl Window {
             "peer-commit",
             crate::client_object::peer_commit_to_string(state.peer_commit),
         );
+        client_object.set_peer_fingerprint(state.peer_fingerprint.clone());
         row.refresh_version_status();
         row.refresh_addresses(&client_object);
+        self.apply_position_gate(&row, state.peer_fingerprint.as_deref());
+    }
+
+    fn apply_position_gate(&self, row: &ClientRow, peer_fingerprint: Option<&str>) {
+        let ws = self.imp().workspace.borrow();
+        let managed =
+            peer_fingerprint.is_some_and(|fp| ws.placements.iter().any(|p| p.fingerprint == fp));
+        row.set_position_managed(managed);
+    }
+
+    fn refresh_all_position_gates(&self) {
+        let n = self.clients().n_items();
+        for i in 0..n {
+            let Some(client) = self.client_by_idx(i) else {
+                continue;
+            };
+            let Some(row) = self.row_by_idx(i as i32) else {
+                continue;
+            };
+            self.apply_position_gate(&row, client.peer_fingerprint().as_deref());
+        }
     }
 
     fn client_object_for_handle(&self, handle: ClientHandle) -> Option<ClientObject> {
@@ -779,6 +801,7 @@ impl Window {
 
     pub(super) fn set_workspace(&self, ws: WorkspaceIpc) {
         *self.imp().workspace.borrow_mut() = ws;
+        self.refresh_all_position_gates();
     }
 
     pub(super) fn open_workspace_editor(&self) {

@@ -64,9 +64,7 @@ pub fn crossed_armed_route(
 ) -> Option<&ArmedRoute> {
     let dx = curr.0 - prev.0;
     let dy = curr.1 - prev.1;
-    let Some(dir) = OutboundDir::from_delta(f64::from(dx), f64::from(dy)) else {
-        return None;
-    };
+    let dir = OutboundDir::from_delta(f64::from(dx), f64::from(dy))?;
     let edge = dir.edge();
     routes.iter().find(|route| {
         if route.edge != edge {

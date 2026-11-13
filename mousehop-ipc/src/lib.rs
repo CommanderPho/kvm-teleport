@@ -578,6 +578,11 @@ pub struct ClientState {
     /// that predates the Hello event. The frontend uses this to
     /// soft-warn on version mismatch.
     pub peer_commit: Option<[u8; 8]>,
+    /// Authenticated TLS fingerprint of the outbound peer when known.
+    /// Used by the GUI to gate legacy Position while the peer is placed
+    /// in a shared workspace.
+    #[serde(default)]
+    pub peer_fingerprint: Option<String>,
 }
 
 /// Receiver-side view of a remote host's input availability. `Locked` and

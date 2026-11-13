@@ -5,8 +5,8 @@ use input_event::{Event as InputEvent, KeyboardEvent};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use mousehop_ipc::{ClientHandle, ConnectionMode, DEFAULT_PORT};
 use mousehop_proto::{
-    MAX_CLIPBOARD_SIZE, MAX_EVENT_SIZE, PROTOCOL_MAGIC, ProtoEvent, decode_fixed_event,
-    decode_proto_datagram, encode_display_layout_event, encode_variable_event,
+    MAX_CLIPBOARD_SIZE, MAX_EVENT_SIZE, PROTOCOL_MAGIC, ProtoEvent, decode_proto_datagram,
+    encode_variable_event,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -404,6 +404,22 @@ impl MousehopConnection {
             primary_hints: self.primary_hints.clone(),
             retry_state: self.retry_state.clone(),
         }
+    }
+
+    /// Peer TLS certificate fingerprint for the active outbound session, if any.
+    pub(crate) async fn peer_fingerprint(&self, handle: ClientHandle) -> Option<String> {
+        let addr = self.client_manager.active_addr(handle)?;
+        let slot = {
+            let conns = self.conns.lock().await;
+            conns.get(&addr).cloned()
+        }?;
+        if slot.handle != handle || !self.sessions.is_current(handle, slot.session) {
+            return None;
+        }
+        let conn: &DTLSConn = slot.conn.as_any().downcast_ref()?;
+        let certs = conn.connection_state().await.peer_certificates;
+        let cert = certs.first()?;
+        Some(crate::crypto::generate_fingerprint(cert))
     }
 
     pub(crate) async fn send(
@@ -1193,6 +1209,7 @@ fn clear_session_ping_state(
 mod tests {
     use super::*;
     use input_event::{Event, KeyboardEvent, PointerEvent, display::DisplayLayout};
+    use mousehop_proto::{decode_fixed_event, encode_display_layout_event};
 
     fn connection_map() -> Mutex<HashMap<SocketAddr, ConnectionSlot>> {
         Mutex::new(HashMap::new())

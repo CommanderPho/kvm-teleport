@@ -101,6 +101,14 @@ impl ClientObject {
     pub fn active_lock(&self) -> Option<String> {
         self.imp().data.borrow().active_lock.clone()
     }
+
+    pub fn set_peer_fingerprint(&self, fingerprint: Option<String>) {
+        self.imp().data.borrow_mut().peer_fingerprint = fingerprint;
+    }
+
+    pub fn peer_fingerprint(&self) -> Option<String> {
+        self.imp().data.borrow().peer_fingerprint.clone()
+    }
 }
 
 /// One candidate address of a peer, as shown in the address selector.
@@ -292,4 +300,6 @@ pub struct ClientData {
     pub mode: ConnectionMode,
     /// Address pinned on the current network (string form), or `None`.
     pub active_lock: Option<String>,
+    /// Authenticated peer TLS fingerprint when known.
+    pub peer_fingerprint: Option<String>,
 }
