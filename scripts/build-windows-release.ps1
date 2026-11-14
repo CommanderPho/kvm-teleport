@@ -63,35 +63,55 @@ Write-Host "==> PKG_CONFIG=$env:PKG_CONFIG"
 Write-Host "==> PKG_CONFIG_PATH=$env:PKG_CONFIG_PATH"
 Write-Host "==> Lib=$env:Lib"
 
+$exe = Join-Path $root "target\release\mousehop.exe"
+$exeFull = [System.IO.Path]::GetFullPath($exe)
+# Stage like CI: exe + GTK DLLs so the folder runs without relying on PATH
+$stage = Join-Path $root "target\release\mousehop-windows"
+$stageFull = [System.IO.Path]::GetFullPath($stage)
+
+# Running mousehop locks the release binary (cargo can't replace it) and/or
+# staged DLLs. Stop those processes before build + restage.
+function Stop-MousehopLockingPaths {
+    param(
+        [string[]]$PathPrefixes
+    )
+    $locked = Get-CimInstance Win32_Process -Filter "Name = 'mousehop.exe'" -ErrorAction SilentlyContinue |
+        Where-Object {
+            if (-not $_.ExecutablePath) { return $false }
+            $path = [System.IO.Path]::GetFullPath($_.ExecutablePath)
+            foreach ($prefix in $PathPrefixes) {
+                if ($path.Equals($prefix, [System.StringComparison]::OrdinalIgnoreCase) -or
+                    $path.StartsWith($prefix.TrimEnd('\') + '\', [System.StringComparison]::OrdinalIgnoreCase)) {
+                    return $true
+                }
+            }
+            $false
+        }
+    if (-not $locked) {
+        return
+    }
+    $pids = @($locked | ForEach-Object { $_.ProcessId })
+    Write-Host "==> stopping $($pids.Count) mousehop process(es): $($pids -join ', ')"
+    foreach ($proc in $locked) {
+        Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
+    }
+    Start-Sleep -Milliseconds 400
+}
+
+Stop-MousehopLockingPaths -PathPrefixes @($exeFull, $stageFull)
+
 Write-Host "==> cargo build -p mousehop --release"
 cargo build -p mousehop --release
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-$exe = Join-Path $root "target\release\mousehop.exe"
 if (-not (Test-Path $exe)) {
     Write-Error "Expected binary missing: $exe"
 }
 
-# Stage like CI: exe + GTK DLLs so the folder runs without relying on PATH
-$stage = Join-Path $root "target\release\mousehop-windows"
-$stageFull = [System.IO.Path]::GetFullPath($stage)
-
-# Running mousehop from the stage folder locks DLLs (and the exe) on Windows.
-$locked = Get-CimInstance Win32_Process -Filter "Name = 'mousehop.exe'" -ErrorAction SilentlyContinue |
-    Where-Object {
-        $_.ExecutablePath -and
-        ([System.IO.Path]::GetFullPath($_.ExecutablePath)).StartsWith($stageFull, [System.StringComparison]::OrdinalIgnoreCase)
-    }
-if ($locked) {
-    $pids = @($locked | ForEach-Object { $_.ProcessId })
-    Write-Host "==> stopping $($pids.Count) mousehop process(es) using staged folder: $($pids -join ', ')"
-    foreach ($proc in $locked) {
-        Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
-    }
-    Start-Sleep -Milliseconds 400
-}
+# In case something relaunched during the build, clear locks again before restage.
+Stop-MousehopLockingPaths -PathPrefixes @($exeFull, $stageFull)
 
 if (Test-Path $stage) {
     Remove-Item -Recurse -Force $stage
