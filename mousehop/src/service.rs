@@ -580,24 +580,21 @@ impl Service {
     fn workspace_ipc(&self) -> mousehop_ipc::WorkspaceIpc {
         use mousehop_ipc::{WorkspaceIpc, WorkspacePlacementIpc, WorkspaceRouteIpc};
         let Some(config) = self.workspace.config() else {
-            // Still surface local topology so Claim/Apply can start from live monitors.
+            // Draft from local + known-fp legacy outgoing clients (Position origins).
+            let seed = self.legacy_workspace_placements();
             let mut ipc = WorkspaceIpc {
                 is_authority: true,
                 authority_fingerprint: self.public_key_fingerprint.clone(),
                 ..Default::default()
             };
-            if self
-                .workspace
-                .topologies()
-                .contains_key(&self.public_key_fingerprint)
-            {
+            for p in seed {
                 ipc.placements.push(WorkspacePlacementIpc {
-                    fingerprint: self.public_key_fingerprint.clone(),
-                    origin_x: 0,
-                    origin_y: 0,
+                    fingerprint: p.peer_fingerprint.clone(),
+                    origin_x: p.origin_in_workspace.0,
+                    origin_y: p.origin_in_workspace.1,
                 });
                 ipc.devices
-                    .push(self.workspace_device_ipc(&self.public_key_fingerprint));
+                    .push(self.workspace_device_ipc(&p.peer_fingerprint));
             }
             return ipc;
         };
@@ -631,24 +628,47 @@ impl Service {
             .iter()
             .map(|p| self.workspace_device_ipc(&p.fingerprint))
             .collect();
-        // Draft placements for live topologies not yet in workspace.toml.
-        let mut next_y = placements
+        // Draft extras: known-fp outgoing clients not yet in workspace.toml.
+        // Origins from seed assume local at (0,0); offset by the live local placement.
+        let local_origin = placements
             .iter()
-            .map(|p| p.origin_y)
-            .max()
-            .unwrap_or(0)
-            .saturating_add(1200);
+            .find(|p| p.fingerprint == self.public_key_fingerprint)
+            .map(|p| (p.origin_x, p.origin_y))
+            .unwrap_or((0, 0));
+        let draft_extra = self.legacy_workspace_placements();
+        for p in draft_extra {
+            if p.peer_fingerprint == self.public_key_fingerprint {
+                continue;
+            }
+            if placements
+                .iter()
+                .any(|existing| existing.fingerprint == p.peer_fingerprint)
+            {
+                continue;
+            }
+            placements.push(WorkspacePlacementIpc {
+                fingerprint: p.peer_fingerprint.clone(),
+                origin_x: p.origin_in_workspace.0 + local_origin.0,
+                origin_y: p.origin_in_workspace.1 + local_origin.1,
+            });
+            devices.push(self.workspace_device_ipc(&p.peer_fingerprint));
+        }
         for fp in self.workspace.topologies().keys() {
             if placements.iter().any(|p| p.fingerprint == *fp) {
                 continue;
             }
+            let next_y = placements
+                .iter()
+                .map(|p| p.origin_y)
+                .max()
+                .unwrap_or(0)
+                .saturating_add(1200);
             placements.push(WorkspacePlacementIpc {
                 fingerprint: fp.clone(),
                 origin_x: 0,
                 origin_y: next_y,
             });
             devices.push(self.workspace_device_ipc(fp));
-            next_y = next_y.saturating_add(1200);
         }
         WorkspaceIpc {
             workspace_id: config.workspace_id.clone(),
@@ -661,7 +681,63 @@ impl Service {
         }
     }
 
+    fn legacy_workspace_placements(&self) -> Vec<input_event::workspace::DevicePlacement> {
+        use crate::workspace_legacy::{LegacyOutgoingPeer, seed_legacy_placements};
+        let local_topo = self
+            .workspace
+            .topologies()
+            .get(&self.public_key_fingerprint)
+            .cloned();
+        let mut outgoing = Vec::new();
+        for (handle, cfg, state) in self.client_manager.get_client_states() {
+            let fp = self
+                .outgoing_peer_fps
+                .get(&handle)
+                .cloned()
+                .or_else(|| state.peer_fingerprint.clone());
+            let Some(fp) = fp else {
+                continue;
+            };
+            if fp == self.public_key_fingerprint {
+                continue;
+            }
+            let peer_topology = self.workspace.topologies().get(&fp).cloned();
+            outgoing.push(LegacyOutgoingPeer {
+                fingerprint: fp,
+                position: cfg.pos,
+                peer_topology,
+            });
+        }
+        seed_legacy_placements(
+            &self.public_key_fingerprint,
+            local_topo.as_ref(),
+            &outgoing,
+        )
+    }
+
+    fn local_hostname_label(&self) -> Option<String> {
+        hostname::get()
+            .ok()
+            .and_then(|h| h.into_string().ok())
+            .filter(|s| !s.is_empty())
+    }
+
+    fn outgoing_hostname_for_fp(&self, fingerprint: &str) -> Option<String> {
+        for (handle, cfg, state) in self.client_manager.get_client_states() {
+            let fp = self
+                .outgoing_peer_fps
+                .get(&handle)
+                .cloned()
+                .or_else(|| state.peer_fingerprint.clone());
+            if fp.as_deref() == Some(fingerprint) {
+                return cfg.hostname.filter(|s| !s.is_empty());
+            }
+        }
+        None
+    }
+
     fn workspace_device_ipc(&self, fingerprint: &str) -> mousehop_ipc::WorkspaceDeviceIpc {
+        use crate::workspace_legacy::resolve_workspace_label;
         use mousehop_ipc::{WorkspaceDeviceIpc, WorkspaceDisplayIpc};
         let presence = if fingerprint == self.public_key_fingerprint {
             "local"
@@ -670,14 +746,23 @@ impl Service {
         } else {
             "offline"
         };
-        let label = self
+        let auth = self
             .authorized_keys
             .read()
             .expect("lock")
             .get(fingerprint)
-            .map(|c| c.description.clone())
-            .filter(|d| !d.is_empty())
-            .unwrap_or_else(|| fingerprint.chars().take(8).collect());
+            .cloned();
+        let local_host = self.local_hostname_label();
+        let outgoing_host = self.outgoing_hostname_for_fp(fingerprint);
+        let label = resolve_workspace_label(
+            fingerprint,
+            &self.public_key_fingerprint,
+            local_host.as_deref(),
+            outgoing_host.as_deref(),
+            auth.as_ref().map(|c| c.description.as_str()),
+            auth.as_ref()
+                .and_then(|c| c.last_hostname.as_deref()),
+        );
         let displays = self
             .workspace
             .topologies()
@@ -755,12 +840,21 @@ impl Service {
                     self.notify_frontend(FrontendEvent::WorkspaceValidationError(e.to_string()))
                 }
             }
-        } else if let Err(e) = self.workspace.ensure_authority_workspace("default") {
-            self.notify_frontend(FrontendEvent::WorkspaceValidationError(e.to_string()));
         } else {
-            self.push_spatial_routing();
-            self.notify_frontend(FrontendEvent::WorkspaceUpdated(self.workspace_ipc()));
-            self.publish_workspace_to_peers().await;
+            let seed = self.legacy_workspace_placements();
+            match self
+                .workspace
+                .ensure_authority_workspace("default", seed)
+            {
+                Ok(()) => {
+                    self.push_spatial_routing();
+                    self.notify_frontend(FrontendEvent::WorkspaceUpdated(self.workspace_ipc()));
+                    self.publish_workspace_to_peers().await;
+                }
+                Err(e) => {
+                    self.notify_frontend(FrontendEvent::WorkspaceValidationError(e.to_string()))
+                }
+            }
         }
     }
 
@@ -824,6 +918,7 @@ impl Service {
             .set_peer_fingerprint(handle, Some(fingerprint));
         self.broadcast_client(handle);
         self.push_spatial_routing();
+        self.notify_frontend(FrontendEvent::WorkspaceUpdated(self.workspace_ipc()));
     }
 
     fn note_peer_capabilities(&mut self, fingerprint: &str, capabilities: u32) {

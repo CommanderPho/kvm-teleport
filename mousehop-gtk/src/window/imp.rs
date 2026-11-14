@@ -82,6 +82,8 @@ pub struct Window {
     pub about_copy_button: TemplateChild<Button>,
     /// Latest shared workspace snapshot from the daemon.
     pub workspace: RefCell<WorkspaceIpc>,
+    /// Live update hook while the Shared layout dialog is open.
+    pub workspace_editor_hook: RefCell<Option<std::rc::Rc<dyn Fn(WorkspaceIpc)>>>,
     pub clients: RefCell<Option<gio::ListStore>>,
     pub authorized: RefCell<Option<gio::ListStore>>,
     pub frontend_request_writer: RefCell<Option<FrontendRequestWriter>>,

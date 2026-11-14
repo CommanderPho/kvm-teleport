@@ -23,6 +23,9 @@ use std::rc::Rc;
 const SNAP_THRESHOLD: i32 = 24;
 const PLACEHOLDER_W: u32 = 1920;
 const PLACEHOLDER_H: u32 = 1080;
+/// Minimum DrawingArea allocation before fit_view may run (avoids scale 0.01).
+const FIT_MIN_PX: i32 = 64;
+const PEER_SIDEBAR_WIDTH: i32 = 280;
 
 #[derive(Clone)]
 struct ViewTransform {
@@ -66,12 +69,15 @@ struct EditorState {
     error: String,
     /// Fingerprint being dragged, with grab offset in world coords.
     drag: Option<(String, i32, i32)>,
+    /// Fit once the DrawingArea has a real allocation.
+    needs_fit: bool,
 }
 
 pub fn present_workspace_editor(
     parent: &impl IsA<gtk::Window>,
     request: Rc<dyn Fn(FrontendRequest)>,
     initial: WorkspaceIpc,
+    register_live: Rc<dyn Fn(Option<Rc<dyn Fn(WorkspaceIpc)>>)>,
 ) {
     let dialog = adw::Window::new();
     dialog.set_transient_for(Some(parent));
@@ -89,6 +95,7 @@ pub fn present_workspace_editor(
         view: ViewTransform::default(),
         error: String::new(),
         drag: None,
+        needs_fit: true,
     }));
 
     let root = gtk::Box::new(Orientation::Vertical, 8);
@@ -124,7 +131,9 @@ pub fn present_workspace_editor(
 
     let peer_scroller = gtk::ScrolledWindow::new();
     peer_scroller.set_policy(gtk::PolicyType::Never, gtk::PolicyType::Automatic);
-    peer_scroller.set_min_content_width(220);
+    peer_scroller.set_min_content_width(PEER_SIDEBAR_WIDTH);
+    peer_scroller.set_size_request(PEER_SIDEBAR_WIDTH, -1);
+    peer_scroller.set_hexpand(false);
     peer_scroller.set_vexpand(true);
     let peer_list = gtk::ListBox::new();
     peer_list.add_css_class("boxed-list");
@@ -170,6 +179,9 @@ pub fn present_workspace_editor(
         #[strong]
         state,
         move |_, cr, width, height| {
+            if state.borrow().needs_fit {
+                fit_view(&state, width, height);
+            }
             draw_canvas(cr, width, height, &state.borrow());
         }
     ));
@@ -209,7 +221,8 @@ pub fn present_workspace_editor(
 
     dialog.set_content(Some(&root));
 
-    let refresh_ui = Rc::new({
+    let refresh_ui_slot: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+    let refresh_ui: Rc<dyn Fn()> = {
         let state = state.clone();
         let meta = meta.clone();
         let error_banner = error_banner.clone();
@@ -217,7 +230,8 @@ pub fn present_workspace_editor(
         let area = area.clone();
         let spin_x = spin_x.clone();
         let spin_y = spin_y.clone();
-        move || {
+        let refresh_ui_slot = refresh_ui_slot.clone();
+        Rc::new(move || {
             let st = state.borrow();
             meta.set_text(&format!(
                 "workspace={}  revision={}  authority={}",
@@ -240,14 +254,15 @@ pub fn present_workspace_editor(
                 peer_list.remove(&child);
             }
             drop(st);
-            rebuild_peer_list(&peer_list, &state, editable);
+            let refresh = refresh_ui_slot.borrow().clone();
+            rebuild_peer_list(&peer_list, &state, refresh.as_ref());
             sync_spins(&state, &spin_x, &spin_y);
             area.queue_draw();
-        }
-    });
+        })
+    };
+    *refresh_ui_slot.borrow_mut() = Some(refresh_ui.clone());
 
     refresh_ui();
-    fit_view(&state, area.width().max(1), area.height().max(1));
     area.queue_draw();
 
     snap_toggle.connect_toggled(glib::clone!(
@@ -264,7 +279,8 @@ pub fn present_workspace_editor(
         #[strong]
         area,
         move |_| {
-            fit_view(&state, area.width().max(1), area.height().max(1));
+            state.borrow_mut().needs_fit = true;
+            fit_view(&state, area.width(), area.height());
             area.queue_draw();
         }
     ));
@@ -274,8 +290,12 @@ pub fn present_workspace_editor(
         #[strong]
         area,
         move |_| {
-            state.borrow_mut().zoom = (state.borrow().zoom * 1.2).min(8.0);
-            fit_view(&state, area.width().max(1), area.height().max(1));
+            {
+                let mut st = state.borrow_mut();
+                st.zoom = (st.zoom * 1.2).min(8.0);
+                st.needs_fit = true;
+            }
+            fit_view(&state, area.width(), area.height());
             area.queue_draw();
         }
     ));
@@ -285,8 +305,12 @@ pub fn present_workspace_editor(
         #[strong]
         area,
         move |_| {
-            state.borrow_mut().zoom = (state.borrow().zoom / 1.2).max(0.25);
-            fit_view(&state, area.width().max(1), area.height().max(1));
+            {
+                let mut st = state.borrow_mut();
+                st.zoom = (st.zoom / 1.2).max(0.25);
+                st.needs_fit = true;
+            }
+            fit_view(&state, area.width(), area.height());
             area.queue_draw();
         }
     ));
@@ -479,10 +503,75 @@ pub fn present_workspace_editor(
         }
     ));
 
+    let live_hook: Rc<dyn Fn(WorkspaceIpc)> = Rc::new({
+        let state = state.clone();
+        let refresh_ui = refresh_ui.clone();
+        move |incoming: WorkspaceIpc| {
+            merge_incoming_workspace(&state, incoming);
+            refresh_ui();
+        }
+    });
+    register_live(Some(live_hook));
+    dialog.connect_close_request(glib::clone!(
+        #[strong]
+        register_live,
+        move |_| {
+            register_live(None);
+            glib::Propagation::Proceed
+        }
+    ));
+
     dialog.present();
 }
 
-fn rebuild_peer_list(list: &gtk::ListBox, state: &Rc<RefCell<EditorState>>, editable: bool) {
+/// Merge a daemon workspace snapshot into the open editor.
+///
+/// If the draft is clean (`draft == committed`), replace both. If the user has
+/// unsaved moves, only append placements/devices for new fingerprints.
+fn merge_incoming_workspace(state: &Rc<RefCell<EditorState>>, incoming: WorkspaceIpc) {
+    let mut st = state.borrow_mut();
+    let dirty = st.draft != st.committed;
+    if !dirty {
+        st.committed = incoming.clone();
+        st.draft = incoming;
+        st.needs_fit = true;
+        if st.selected.is_none() {
+            st.selected = st.draft.placements.first().map(|p| p.fingerprint.clone());
+        }
+        return;
+    }
+    // Keep draft origins; refresh committed snapshot and merge new peers.
+    st.committed = incoming.clone();
+    for p in &incoming.placements {
+        if st
+            .draft
+            .placements
+            .iter()
+            .any(|d| d.fingerprint == p.fingerprint)
+        {
+            continue;
+        }
+        st.draft.placements.push(p.clone());
+    }
+    for d in &incoming.devices {
+        if let Some(existing) = st
+            .draft
+            .devices
+            .iter_mut()
+            .find(|x| x.fingerprint == d.fingerprint)
+        {
+            *existing = d.clone();
+        } else {
+            st.draft.devices.push(d.clone());
+        }
+    }
+}
+
+fn rebuild_peer_list(
+    list: &gtk::ListBox,
+    state: &Rc<RefCell<EditorState>>,
+    refresh_ui: Option<&Rc<dyn Fn()>>,
+) {
     let st = state.borrow();
     for placement in &st.draft.placements {
         let device = st
@@ -508,22 +597,27 @@ fn rebuild_peer_list(list: &gtk::ListBox, state: &Rc<RefCell<EditorState>>, edit
             row.add_css_class("accent");
         }
         let fp = placement.fingerprint.clone();
-        if editable {
-            let select = gtk::CheckButton::new();
-            select.set_active(selected);
-            select.set_tooltip_text(Some("Select host"));
-            select.connect_toggled(glib::clone!(
+        if let Some(refresh_ui) = refresh_ui {
+            let select = GestureClick::new();
+            select.connect_pressed(glib::clone!(
                 #[strong]
                 state,
                 #[strong]
+                refresh_ui,
+                #[strong]
                 fp,
-                move |btn| {
-                    if btn.is_active() {
-                        state.borrow_mut().selected = Some(fp.clone());
+                move |_, _, _, _| {
+                    if state.borrow().selected.as_deref() == Some(fp.as_str()) {
+                        return;
                     }
+                    state.borrow_mut().selected = Some(fp.clone());
+                    let refresh_ui = refresh_ui.clone();
+                    glib::idle_add_local_once(move || {
+                        refresh_ui();
+                    });
                 }
             ));
-            row.add_prefix(&select);
+            row.add_controller(select);
         }
         if let Some(device) = device {
             for display in &device.displays {
@@ -597,6 +691,9 @@ fn hit_test(ws: &WorkspaceIpc, wx: i32, wy: i32) -> Option<String> {
 }
 
 fn fit_view(state: &Rc<RefCell<EditorState>>, width: i32, height: i32) {
+    if width < FIT_MIN_PX || height < FIT_MIN_PX {
+        return;
+    }
     let mut st = state.borrow_mut();
     let mut min_x = i32::MAX;
     let mut min_y = i32::MAX;
@@ -619,6 +716,7 @@ fn fit_view(state: &Rc<RefCell<EditorState>>, width: i32, height: i32) {
     if min_x == i32::MAX {
         st.view = ViewTransform::default();
         st.view.scale *= st.zoom;
+        st.needs_fit = false;
         return;
     }
     let world_w = (max_x - min_x).max(1) as f64;
@@ -630,6 +728,7 @@ fn fit_view(state: &Rc<RefCell<EditorState>>, width: i32, height: i32) {
     st.view.scale = scale;
     st.view.origin_x = pad - f64::from(min_x) * scale;
     st.view.origin_y = pad - f64::from(min_y) * scale;
+    st.needs_fit = false;
 }
 
 fn draw_canvas(cr: &Context, width: i32, height: i32, st: &EditorState) {
@@ -680,13 +779,17 @@ fn draw_canvas(cr: &Context, width: i32, height: i32, st: &EditorState) {
         }
         if let Some((hx, hy, w, h)) = host_rects(&st.draft, &p.fingerprint).first().copied() {
             let (vx, vy) = st.view.world_to_view(hx, hy);
-            let label = device
-                .map(|d| d.label.as_str())
-                .unwrap_or(p.fingerprint.as_str());
-            cr.set_source_rgb(0.15, 0.15, 0.18);
-            cr.move_to(vx + 6.0, vy + 16.0);
-            let _ = cr.show_text(&trunc(label, 18));
-            let _ = (w, h);
+            let vh = f64::from(h) * st.view.scale;
+            // Fixed baseline (+16) needs enough rect height to avoid clipped glyphs.
+            if vh >= 24.0 {
+                let label = device
+                    .map(|d| d.label.as_str())
+                    .unwrap_or(p.fingerprint.as_str());
+                cr.set_source_rgb(0.15, 0.15, 0.18);
+                cr.move_to(vx + 6.0, vy + 16.0);
+                let _ = cr.show_text(&trunc(label, 18));
+            }
+            let _ = w;
         }
     }
 

@@ -191,6 +191,30 @@
 			"types": "#c07078",
 			"functions": "#e8c0c0",
 			"variables": "#e8d5d5"
+		},
+		"actionButtons": {
+
+			"commands": [
+				{
+					"name": "Build Exe",
+					"color": "green",
+					"tooltip": "Build mousehop release executable for the current platform",
+					"useVsCodeApi": true,
+					"command": "workbench.action.tasks.runTask",
+					"args": ["Build mousehop (current platform)"]
+				},
+				{
+					"name": "Run Exe",
+					"color": "#7FDBFF",
+					"tooltip": "Launch mousehop from its final release path in the background",
+					"useVsCodeApi": true,
+					"command": "workbench.action.tasks.runTask",
+					"args": ["Launch mousehop (current platform)"]
+				},
+			],
+			"defaultColor": "white",
+			"reloadButton": "↻",
+			"loadNpmCommands": false
 		}
 	},
 
@@ -300,6 +324,41 @@
 					"focus": false
 				},
 				"detail": "Host OS release: Windows exe staging, macOS .app, else cargo build -p mousehop --release"
+			},
+			{
+				"label": "Launch mousehop (current platform)",
+				"type": "shell",
+				"command": "test -x target/release/mousehop && (nohup target/release/mousehop >/dev/null 2>&1 &)",
+				"windows": {
+					"command": "Start-Process -FilePath '${workspaceFolder}\\target\\release\\mousehop-windows\\mousehop.exe' -WorkingDirectory '${workspaceFolder}\\target\\release\\mousehop-windows'",
+					"options": {
+						"cwd": "${workspaceFolder}",
+						"shell": {
+							"executable": "powershell.exe",
+							"args": [
+								"-NoProfile",
+								"-Command"
+							]
+						}
+					}
+				},
+				"osx": {
+					"command": "open \"${workspaceFolder}/MousehopDev.app\"",
+					"options": {
+						"cwd": "${workspaceFolder}"
+					}
+				},
+				"options": {
+					"cwd": "${workspaceFolder}"
+				},
+				"problemMatcher": [],
+				"presentation": {
+					"reveal": "silent",
+					"panel": "shared",
+					"focus": false,
+					"close": true
+				},
+				"detail": "Background launch from final path: Windows mousehop-windows\\mousehop.exe, macOS MousehopDev.app, else target/release/mousehop"
 			}
 		]
 	}

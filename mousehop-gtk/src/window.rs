@@ -800,8 +800,11 @@ impl Window {
     }
 
     pub(super) fn set_workspace(&self, ws: WorkspaceIpc) {
-        *self.imp().workspace.borrow_mut() = ws;
+        *self.imp().workspace.borrow_mut() = ws.clone();
         self.refresh_all_position_gates();
+        if let Some(hook) = self.imp().workspace_editor_hook.borrow().clone() {
+            hook(ws);
+        }
     }
 
     pub(super) fn open_workspace_editor(&self) {
@@ -810,7 +813,11 @@ impl Window {
         let request = Rc::new(move |req: FrontendRequest| {
             window.request(req);
         }) as Rc<dyn Fn(FrontendRequest)>;
-        crate::workspace_editor::present_workspace_editor(self, request, ws);
+        let window = self.clone();
+        let register_live = Rc::new(move |hook: Option<Rc<dyn Fn(WorkspaceIpc)>>| {
+            *window.imp().workspace_editor_hook.borrow_mut() = hook;
+        }) as Rc<dyn Fn(Option<Rc<dyn Fn(WorkspaceIpc)>>)>;
+        crate::workspace_editor::present_workspace_editor(self, request, ws, register_live);
     }
 
     pub(super) fn add_toast(&self, toast: adw::Toast) {

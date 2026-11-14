@@ -48,6 +48,16 @@ Peers without the capability keep legacy `Position` + `cross_fraction` handoffs.
 
 Missing `workspace.toml` does not break existing installs.
 
+**Legacy → spatial conversion:** Opening Shared layout (or Claim authority)
+drafts / seeds placements for this host plus every **outgoing client that
+already has a TLS fingerprint** (known after first successful connect).
+Origins are taken from each client’s legacy `position` relative to the local
+monitor AABB. Clients that have never connected stay off the canvas until
+their fingerprint is known; the arranger then picks them up live.
+
+Device labels prefer OS / DNS hostnames (`MacBookPro.lan`) over fingerprint
+prefixes.
+
 ## GUI planner
 
 Open **Outgoing Connections → Shared layout…** (also About → build row).

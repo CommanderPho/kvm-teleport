@@ -1,4 +1,4 @@
-﻿# Build a runnable Windows release folder (mousehop.exe + GTK DLLs).
+﻿S# Build a runnable Windows release folder (mousehop.exe + GTK DLLs).
 # Matches README "Windows" §3–4 and the CI windows-release-build packaging:
 #   1. Session GTK env (Path, PKG_CONFIG, PKG_CONFIG_PATH, Lib)
 #   2. Confirm gtk4 + libadwaita via pkgconf
@@ -76,6 +76,23 @@ if (-not (Test-Path $exe)) {
 
 # Stage like CI: exe + GTK DLLs so the folder runs without relying on PATH
 $stage = Join-Path $root "target\release\mousehop-windows"
+$stageFull = [System.IO.Path]::GetFullPath($stage)
+
+# Running mousehop from the stage folder locks DLLs (and the exe) on Windows.
+$locked = Get-CimInstance Win32_Process -Filter "Name = 'mousehop.exe'" -ErrorAction SilentlyContinue |
+    Where-Object {
+        $_.ExecutablePath -and
+        ([System.IO.Path]::GetFullPath($_.ExecutablePath)).StartsWith($stageFull, [System.StringComparison]::OrdinalIgnoreCase)
+    }
+if ($locked) {
+    $pids = @($locked | ForEach-Object { $_.ProcessId })
+    Write-Host "==> stopping $($pids.Count) mousehop process(es) using staged folder: $($pids -join ', ')"
+    foreach ($proc in $locked) {
+        Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
+    }
+    Start-Sleep -Milliseconds 400
+}
+
 if (Test-Path $stage) {
     Remove-Item -Recurse -Force $stage
 }

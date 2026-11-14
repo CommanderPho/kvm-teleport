@@ -210,22 +210,31 @@ impl WorkspaceState {
         Ok(())
     }
 
-    /// Create an initial empty workspace with this device as authority.
+    /// Create an initial workspace with this device as authority.
+    ///
+    /// `placements` should already include local + known-fp legacy peers.
+    /// If empty, seeds local-only at `(0, 0)`.
     pub fn ensure_authority_workspace(
         &mut self,
         workspace_id: impl Into<String>,
+        placements: Vec<DevicePlacement>,
     ) -> Result<(), WorkspaceStateError> {
         if self.config.is_some() {
             return Ok(());
         }
+        let placements = if placements.is_empty() {
+            vec![DevicePlacement {
+                peer_fingerprint: self.local_fingerprint.clone(),
+                origin_in_workspace: (0, 0),
+            }]
+        } else {
+            placements
+        };
         let config = WorkspaceConfig {
             workspace_id: workspace_id.into(),
             revision: 1,
             authority_fingerprint: self.local_fingerprint.clone(),
-            placements: vec![DevicePlacement {
-                peer_fingerprint: self.local_fingerprint.clone(),
-                origin_in_workspace: (0, 0),
-            }],
+            placements,
         };
         self.apply_local(config)
     }
