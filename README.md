@@ -346,8 +346,13 @@ Set-Location C:\gtk-build
 gvsbuild build --vs-ver vs2026 --msys-dir=C:\msys64 --configuration release gtk4 libadwaita
 ```
 
-Release packaging also builds `librsvg` (SVG tray icon). CI builds `gtk4` +
-`libadwaita` only; that is enough to compile. To match the release zip deps:
+Release packaging also builds `librsvg` (SVG tray icon). The release zip and
+`scripts/build-windows-release.ps1` stage not only `bin\*.dll` but also the
+gdk-pixbuf SVG loader tree (`lib\gdk-pixbuf-2.0\2.10.0\loaders\pixbufloader_svg.dll`
+plus `loaders.cache`). Without that loader, a side-by-side GTK copy shadows a
+working install on `PATH` and the notification-area glyph stays blank (a
+bundled PNG fallback still shows an icon). CI builds `gtk4` + `libadwaita`
+only; that is enough to compile. To match the release zip deps:
 
 ```powershell
 gvsbuild build --vs-ver vs2026 --msys-dir=C:\msys64 --configuration release gtk4 libadwaita librsvg
@@ -431,7 +436,9 @@ cargo build -p mousehop --release
 
 `target\release\mousehop.exe` (and the debug build) need the GTK DLLs from
 `C:\gtk-build\gtk\x64\release\bin` on `PATH`, or copied next to the exe (as the
-release zip does).
+release zip / `scripts/build-windows-release.ps1` stage does). When copying
+DLLs beside the exe, also ship the gdk-pixbuf SVG loader under
+`lib\gdk-pixbuf-2.0\2.10.0\` so the tray icon can rasterize the SVG glyph.
 
 Verify:
 

@@ -12,6 +12,9 @@
   <gresource prefix="/com/mousehop/Mousehop/icons">
     <file compressed="true" preprocess="xml-stripblanks">com.mousehop.Mousehop.svg</file>
     <file compressed="true" preprocess="xml-stripblanks" alias="mousehop-tray.svg">icons/mousehop-tray.svg</file>
+    <!-- Pre-rasterized tray glyphs for Windows when the SVG pixbuf loader is missing. -->
+    <file compressed="true" alias="mousehop-tray-light.png">icons/mousehop-tray-light.png</file>
+    <file compressed="true" alias="mousehop-tray-dark.png">icons/mousehop-tray-dark.png</file>
     <!--
       Bundled Adwaita symbolic icons so the GTK frontend has a complete icon set
       on platforms (notably macOS) where the Adwaita icon theme is not installed.
