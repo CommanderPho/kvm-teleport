@@ -4,7 +4,7 @@ use adw::prelude::*;
 use adw::subclass::prelude::*;
 use gtk::glib::{self, Object};
 
-use mousehop_ipc::{CrossingModifier, DEFAULT_PORT, Position};
+use mousehop_ipc::{CrossingModifier, DEFAULT_PORT};
 
 use super::ClientObject;
 
@@ -99,18 +99,6 @@ impl ClientRow {
             .title_handlers
             .borrow_mut()
             .extend([hostname_title_handler, port_title_handler]);
-
-        // bind position to selected position
-        let position_binding = client_object
-            .bind_property("position", &self.imp().position.get(), "selected")
-            .transform_to(|_, v: String| match v.as_str() {
-                "right" => Some(1u32),
-                "top" => Some(2u32),
-                "bottom" => Some(3u32),
-                _ => Some(0u32),
-            })
-            .sync_create()
-            .build();
 
         // bind resolving status to spinner visibility
         let resolve_binding = client_object
@@ -208,7 +196,6 @@ impl ClientRow {
         bindings.push(switch_position_binding);
         bindings.push(hostname_binding);
         bindings.push(port_binding);
-        bindings.push(position_binding);
         bindings.push(resolve_binding);
         bindings.push(ip_binding);
         bindings.push(clipboard_send_state_binding);
@@ -253,15 +240,6 @@ impl ClientRow {
 
     pub fn set_port(&self, port: u16) {
         self.imp().set_port(port);
-    }
-
-    pub fn set_position(&self, pos: Position) {
-        self.imp().set_pos(pos);
-    }
-
-    /// When the peer is placed in a shared workspace, disable legacy Position.
-    pub fn set_position_managed(&self, managed: bool) {
-        self.imp().set_position_managed(managed);
     }
 
     pub fn set_dns_state(&self, resolved: bool) {

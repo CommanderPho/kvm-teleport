@@ -6,7 +6,7 @@ use glib::{Binding, subclass::InitializingObject};
 use gtk::glib::subclass::Signal;
 use gtk::glib::{SignalHandlerId, clone};
 use gtk::{Button, CompositeTemplate, Entry, Switch, glib};
-use mousehop_ipc::{ConnectionMode, Position};
+use mousehop_ipc::ConnectionMode;
 use std::sync::OnceLock;
 
 use crate::client_object::{AddrEntry, ClientObject, LatencyState, format_latency, iface_label};
@@ -33,7 +33,7 @@ pub struct ClientRow {
     #[template_child]
     pub port: TemplateChild<gtk::Entry>,
     #[template_child]
-    pub position: TemplateChild<ComboRow>,
+    pub setup_layout_row: TemplateChild<ActionRow>,
     #[template_child]
     pub address_select: TemplateChild<ComboRow>,
     #[template_child]
@@ -46,7 +46,6 @@ pub struct ClientRow {
     pub title_handlers: RefCell<Vec<SignalHandlerId>>,
     hostname_change_handler: RefCell<Option<SignalHandlerId>>,
     port_change_handler: RefCell<Option<SignalHandlerId>>,
-    position_change_handler: RefCell<Option<SignalHandlerId>>,
     set_state_handler: RefCell<Option<SignalHandlerId>>,
     pub clipboard_send_handler: RefCell<Option<SignalHandlerId>>,
     pub command_as_ctrl_handler: RefCell<Option<SignalHandlerId>>,
@@ -115,14 +114,6 @@ impl ObjectImpl for ClientRow {
             }
         ));
         self.port_change_handler.replace(Some(handler));
-        let handler = self.position.connect_selected_notify(clone!(
-            #[weak(rename_to = row)]
-            self,
-            move |position| {
-                row.handle_position_changed(position);
-            }
-        ));
-        self.position_change_handler.replace(Some(handler));
         let handler = self.enable_switch.connect_state_set(clone!(
             #[weak(rename_to = row)]
             self,
@@ -231,9 +222,7 @@ impl ObjectImpl for ClientRow {
                 Signal::builder("request-port-change")
                     .param_types([u32::static_type()])
                     .build(),
-                Signal::builder("request-position-change")
-                    .param_types([u32::static_type()])
-                    .build(),
+                Signal::builder("request-setup-layout").build(),
                 Signal::builder("request-clipboard-send-change")
                     .param_types([bool::static_type()])
                     .build(),
@@ -265,6 +254,11 @@ impl ClientRow {
     }
 
     #[template_callback]
+    fn handle_setup_layout(&self, _row: &ActionRow) {
+        self.obj().emit_by_name::<()>("request-setup-layout", &[]);
+    }
+
+    #[template_callback]
     fn handle_request_dns(&self, _: &Button) {
         self.obj().emit_by_name::<()>("request-dns", &[]);
     }
@@ -284,11 +278,6 @@ impl ClientRow {
     fn handle_hostname_changed(&self, hostname_entry: &Entry) {
         self.obj()
             .emit_by_name::<()>("request-hostname-change", &[&hostname_entry.text()]);
-    }
-
-    fn handle_position_changed(&self, position: &ComboRow) {
-        self.obj()
-            .emit_by_name("request-position-change", &[&position.selected()])
     }
 
     pub(super) fn set_hostname(&self, hostname: Option<String>) {
@@ -317,29 +306,6 @@ impl ClientRow {
             .set_port(port as u32);
         self.port.unblock_signal(handler);
         self.port.set_position(position);
-    }
-
-    pub(super) fn set_pos(&self, pos: Position) {
-        let handler = self.position_change_handler.borrow();
-        let handler = handler.as_ref().expect("signal handler");
-        self.position.block_signal(handler);
-        self.client_object
-            .borrow_mut()
-            .as_mut()
-            .expect("client object")
-            .set_position(pos.to_string());
-        self.position.unblock_signal(handler);
-    }
-
-    pub(super) fn set_position_managed(&self, managed: bool) {
-        self.position.set_sensitive(!managed);
-        if managed {
-            self.position
-                .set_subtitle("Managed by shared workspace layout");
-        } else {
-            self.position
-                .set_subtitle("Where this device sits relative to your screen.");
-        }
     }
 
     pub(super) fn set_active(&self, active: bool) {

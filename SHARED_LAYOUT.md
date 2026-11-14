@@ -43,32 +43,56 @@ Peers without the capability keep legacy `Position` + `cross_fraction` handoffs.
 
 ## Configuration
 
-- Legacy: `position = "left|right|top|bottom"` in `config.toml` (unchanged).
+- Legacy: `position = "left|right|top|bottom"` in `config.toml` (unchanged; silent
+  default `left` for barrier create / migration when needed).
 - Spatial: `workspace.toml` next to `config.toml` (absent ⇒ legacy-only).
 
 Missing `workspace.toml` does not break existing installs.
 
-**Legacy → spatial conversion:** Opening Shared layout (or Claim authority)
-drafts / seeds placements for this host plus every **outgoing client that
-already has a TLS fingerprint** (known after first successful connect).
-Origins are taken from each client’s legacy `position` relative to the local
-monitor AABB. Clients that have never connected stay off the canvas until
-their fingerprint is known; the arranger then picks them up live.
+**Legacy → spatial conversion:** Opening the shared-layout editor drafts /
+seeds placements for this host plus every **outgoing client that already has a
+TLS fingerprint** (known after first successful connect). Origins are taken from
+each client’s legacy `position` relative to the local monitor AABB. Clients that
+have never connected stay off the canvas until their fingerprint is known; the
+arranger then picks them up live.
 
 Device labels prefer OS / DNS hostnames (`MacBookPro.lan`) over fingerprint
 prefixes.
 
 ## GUI planner
 
-Open **Outgoing Connections → Shared layout…** (also About → build row).
+### First-time setup (Setup Layout)
+
+On each outgoing client row, **Setup Layout**:
+
+1. Requires a hostname.
+2. Connects the peer (`Activate`) and waits for its TLS fingerprint.
+3. Fetches the workspace and opens the Shared layout editor with that peer
+   selected for positioning.
+4. After you **Apply**, the peer is in `workspace.placements` and the Enable
+   switch may turn capture on for that peer.
+
+Until a peer is placed (fingerprint present in applied placements), enabling the
+outgoing client is blocked with a toast pointing at Setup Layout.
+
+### Editing an applied workspace (Shared layout…)
+
+**Outgoing Connections → Shared layout…** (and About → build row) is **edit-only**.
+It is sensitive only when a workspace has already been applied
+(`workspace_id` non-empty and `revision > 0`). First-time placement uses
+**Setup Layout** on the client row, not this button.
+
+In the editor:
 
 - Peer list shows each host with nested, read-only displays.
 - Canvas draws every host’s full monitor set in workspace space.
 - Authority drags **host groups**, optional edge snap, Fit/zoom, X/Y spins.
 - Route interval highlights and overlap/validation errors on the draft.
 - Claim / Apply / Revert / Close. Followers are view-only.
-- When a peer is placed in the workspace, that row’s legacy Position combo
-  is disabled and labeled “managed by shared workspace layout”.
+
+The outgoing Position combo has been removed from the GUI. Legacy `position` in
+config remains for IPC compatibility and barrier seeding; spatial placement is
+owned by the workspace after Apply.
 
 ## Capture backends
 

@@ -55,21 +55,13 @@
 				</child>
 			</object>
 		</child>
-		<!-- position -->
+		<!-- first-time shared workspace placement -->
 		<child>
-			<object class="AdwComboRow" id="position">
-				<property name="title" translatable="yes">Position</property>
-				<property name="subtitle" translatable="yes">Where this device sits relative to your screen.</property>
-				<property name="model">
-					<object class="GtkStringList">
-						<items>
-							<item>Left</item>
-							<item>Right</item>
-							<item>Top</item>
-							<item>Bottom</item>
-						</items>
-					</object>
-				</property>
+			<object class="AdwActionRow" id="setup_layout_row">
+				<property name="title" translatable="yes">Setup Layout</property>
+				<property name="subtitle" translatable="yes">Connect this peer and place it in the shared workspace.</property>
+				<property name="activatable">true</property>
+				<signal name="activated" handler="handle_setup_layout" swapped="true"/>
 			</object>
 		</child>
 		<!-- optional modifier-gated edge crossing -->

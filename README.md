@@ -586,11 +586,13 @@ Where `left` can be either `left`, `right`, `top` or `bottom`.
 
 For Teleport-style placement of each machine’s **rigid monitor set** in
 shared continuous X/Y space, see [SHARED_LAYOUT.md](SHARED_LAYOUT.md).
-Configuration lives in `workspace.toml` beside `config.toml`. Open the GTK
-planner from **Outgoing Connections → Shared layout…** (also About → build).
-Authority drags host groups (not individual monitors); followers are
-view-only. Peers placed in the workspace disable that row’s legacy
-`position` combo. Peers without the shared-workspace capability keep the
+Configuration lives in `workspace.toml` beside `config.toml`. First-time
+placement uses **Setup Layout** on an outgoing client row (connects the peer,
+then opens the planner with that peer selected). **Shared layout…** (header and
+About → build) edits an already-applied workspace only. Authority drags host
+groups (not individual monitors); followers are view-only. The outgoing
+Position combo is removed from the GUI; legacy `position` in config remains for
+IPC and barrier seeding. Peers without the shared-workspace capability keep the
 four-edge `position` model above. Manual Win/macOS checks:
 [docs/manual-spatial-checklist.md](docs/manual-spatial-checklist.md).
 

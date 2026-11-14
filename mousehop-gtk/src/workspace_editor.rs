@@ -78,6 +78,7 @@ pub fn present_workspace_editor(
     request: Rc<dyn Fn(FrontendRequest)>,
     initial: WorkspaceIpc,
     register_live: Rc<dyn Fn(Option<Rc<dyn Fn(WorkspaceIpc)>>)>,
+    initial_selected: Option<String>,
 ) {
     let dialog = adw::Window::new();
     dialog.set_transient_for(Some(parent));
@@ -86,10 +87,14 @@ pub fn present_workspace_editor(
     dialog.set_default_size(920, 640);
 
     let editable = initial.is_authority;
+    // Prefer caller-provided selection (Setup Layout) even if the peer
+    // is only seeded into the draft on a subsequent WorkspaceUpdated.
+    let selected = initial_selected
+        .or_else(|| initial.placements.first().map(|p| p.fingerprint.clone()));
     let state = Rc::new(RefCell::new(EditorState {
         committed: initial.clone(),
         draft: initial.clone(),
-        selected: initial.placements.first().map(|p| p.fingerprint.clone()),
+        selected,
         snap: true,
         zoom: 1.0,
         view: ViewTransform::default(),
