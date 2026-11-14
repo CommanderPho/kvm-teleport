@@ -359,6 +359,67 @@
 					"close": true
 				},
 				"detail": "Background launch from final path: Windows mousehop-windows\\mousehop.exe, macOS MousehopDev.app, else target/release/mousehop"
+			},
+			{
+				"label": "Build mousehop (debug)",
+				"type": "shell",
+				"command": "cargo build -p mousehop",
+				"windows": {
+					"command": "$ErrorActionPreference='Stop'; $cargoBin = if ($env:CARGO_HOME) { Join-Path $env:CARGO_HOME 'bin' } else { Join-Path $env:USERPROFILE '.cargo\\bin' }; $gtkRoot = if ($env:MOUSEHOP_GTK_ROOT) { $env:MOUSEHOP_GTK_ROOT } else { 'C:\\gtk-build\\gtk\\x64\\release' }; $gtkBin = Join-Path $gtkRoot 'bin'; $gtkLib = Join-Path $gtkRoot 'lib'; $env:Path = ($cargoBin + ';' + $gtkBin + ';' + $env:Path); $env:PKG_CONFIG = (Join-Path $gtkBin 'pkgconf.exe'); $env:PKG_CONFIG_PATH = (Join-Path $gtkLib 'pkgconfig'); if ($env:Lib) { $env:Lib = ($gtkLib + ';' + $env:Lib) } else { $env:Lib = $gtkLib }; Get-Process -Name mousehop -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300; & (Join-Path $cargoBin 'cargo.exe') build -p mousehop",
+					"options": {
+						"cwd": "${workspaceFolder}",
+						"shell": {
+							"executable": "powershell.exe",
+							"args": [
+								"-NoProfile",
+								"-Command"
+							]
+						}
+					}
+				},
+				"osx": {
+					"command": "host=$(rustc -vV | awk '/^host:/{print $2}'); case \"$host\" in aarch64-*) p=/opt/homebrew;; x86_64-*) p=/usr/local;; *) echo \"unsupported rustc host: $host\" >&2; exit 1;; esac; export LIBRARY_PATH=\"$p/lib\" PKG_CONFIG_PATH=\"$p/lib/pkgconfig\" PATH=\"${CARGO_HOME:-$HOME/.cargo}/bin:$p/bin:$PATH\"; cargo build -p mousehop",
+					"options": {
+						"cwd": "${workspaceFolder}"
+					}
+				},
+				"options": {
+					"cwd": "${workspaceFolder}"
+				},
+				"group": "build",
+				"problemMatcher": [
+					"$rustc"
+				],
+				"presentation": {
+					"reveal": "silent",
+					"panel": "shared",
+					"focus": false
+				},
+				"detail": "Debug build for F5 launch (Windows: GTK env + stop running mousehop.exe first)"
+			}
+		]
+	},
+
+	"launch": {
+		"version": "0.2.0",
+		"configurations": [
+			{
+				"name": "Debug mousehop (Windows MSVC)",
+				"type": "cppvsdbg",
+				"request": "launch",
+				"program": "${workspaceFolder}/target/debug/mousehop.exe",
+				"cwd": "${workspaceFolder}",
+				"preLaunchTask": "Build mousehop (debug)",
+				"env": {
+					"RUST_LOG": "mousehop=debug",
+					"Path": "C:\\gtk-build\\gtk\\x64\\release\\bin;${env:Path}",
+					"PKG_CONFIG": "C:\\gtk-build\\gtk\\x64\\release\\bin\\pkgconf.exe",
+					"PKG_CONFIG_PATH": "C:\\gtk-build\\gtk\\x64\\release\\lib\\pkgconfig"
+				},
+				"console": "integratedTerminal",
+				"windows": {
+					"program": "${workspaceFolder}/target/debug/mousehop.exe"
+				}
 			}
 		]
 	}

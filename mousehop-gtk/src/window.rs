@@ -583,12 +583,21 @@ impl Window {
 
     fn begin_setup_layout(&self, client: &ClientObject) {
         let hostname: Option<String> = client.property("hostname");
-        if hostname.as_deref().is_none_or(|h| h.is_empty()) {
+        let Some(hostname) = hostname.filter(|h| !h.is_empty()) else {
             self.show_toast("Set a hostname before Setup Layout");
+            return;
+        };
+
+        let handle = client.handle();
+        // Re-click while still waiting for this peer's fingerprint: keep the
+        // in-flight Activate instead of cancelling via a new generation.
+        if self.imp().pending_setup_handle.get() == Some(handle)
+            && client.peer_fingerprint().is_none()
+        {
+            self.show_toast(&format!("Still connecting to {hostname}…"));
             return;
         }
 
-        let handle = client.handle();
         // Only gate Enable when this peer is not already in an applied layout.
         // Re-opening Setup Layout for a placed peer must not block Activate.
         {
@@ -605,9 +614,11 @@ impl Window {
         self.imp().pending_setup_open.replace(None);
 
         if let Some(fp) = client.peer_fingerprint() {
+            self.show_toast("Opening shared layout…");
             self.imp().pending_setup_handle.set(None);
             self.request_setup_layout_workspace(fp);
         } else {
+            self.show_toast(&format!("Connecting to {hostname}…"));
             self.imp().pending_setup_handle.set(Some(handle));
             self.request(FrontendRequest::Activate(handle, true));
         }
