@@ -13,7 +13,7 @@ todos:
     status: completed
   - id: docs-verify
     content: Document loader packaging in README; verify icon from staged mousehop-windows folder
-    status: in_progress
+    status: completed
 isProject: false
 ---
 

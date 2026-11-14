@@ -33,7 +33,10 @@ use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use async_channel::Sender;
-use gtk::{gdk_pixbuf::Pixbuf, gio, glib};
+use gtk::{
+    gdk_pixbuf::{Pixbuf, PixbufLoader},
+    gio, glib,
+};
 
 use windows::Win32::Foundation::{E_FAIL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, TRUE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -612,12 +615,30 @@ fn render_svg(resource: &str, ink: &str, width: i32, height: i32) -> Option<Pixb
         }
     };
     let recolored = svg.replace("currentColor", ink);
-    let bytes = glib::Bytes::from_owned(recolored.into_bytes());
-    let stream = gio::MemoryInputStream::from_bytes(&bytes);
-    match Pixbuf::from_stream_at_scale(&stream, width, height, true, gio::Cancellable::NONE) {
-        Ok(pixbuf) => Some(pixbuf),
+    // Force the SVG loader by MIME type. `from_stream_at_scale` only
+    // sniffs the payload; on staged Windows builds that often yields
+    // "Unrecognized image file format" even when pixbufloader_svg is
+    // registered via GDK_PIXBUF_MODULE_FILE.
+    let loader = match PixbufLoader::with_mime_type("image/svg+xml") {
+        Ok(loader) => loader,
         Err(e) => {
-            log::warn!("windows_tray: rasterize tray SVG at {width}x{height}px: {e}");
+            log::warn!("windows_tray: no SVG pixbuf loader available: {e}");
+            return None;
+        }
+    };
+    loader.set_size(width, height);
+    if let Err(e) = loader.write(recolored.as_bytes()) {
+        log::warn!("windows_tray: rasterize tray SVG at {width}x{height}px: {e}");
+        return None;
+    }
+    if let Err(e) = loader.close() {
+        log::warn!("windows_tray: finish tray SVG at {width}x{height}px: {e}");
+        return None;
+    }
+    match loader.pixbuf() {
+        Some(pixbuf) => Some(pixbuf),
+        None => {
+            log::warn!("windows_tray: SVG loader produced no pixbuf at {width}x{height}px");
             None
         }
     }

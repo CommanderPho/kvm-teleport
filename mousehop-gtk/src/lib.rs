@@ -148,9 +148,8 @@ pub fn run(info: BuildInfo) -> Result<(), GtkError> {
         }
     };
 
-    // Before the GTK thread starts: gdk-pixbuf reads
-    // GDK_PIXBUF_MODULE_FILE when it first loads modules, and on
-    // Windows that can happen as soon as the gtk thread touches GTK.
+    // Before the GTK thread starts: point gdk-pixbuf at the SVG loader
+    // shipped beside staged Windows builds.
     #[cfg(windows)]
     configure_windows_pixbuf_environment();
 
