@@ -16,7 +16,7 @@ use mousehop_ipc::{
     FrontendRequest, WorkspaceDeviceIpc, WorkspaceDisplayIpc, WorkspaceIpc, WorkspacePlacementIpc,
     WorkspaceRouteIpc,
 };
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
@@ -59,6 +59,7 @@ impl ViewTransform {
     }
 }
 
+#[derive(Clone)]
 struct EditorState {
     committed: WorkspaceIpc,
     draft: WorkspaceIpc,
@@ -102,6 +103,10 @@ pub fn present_workspace_editor(
         drag: None,
         needs_fit: true,
     }));
+    // Guards spin value-changed handlers while sync_spins writes
+    // SpinButton values programmatically. Without this, set_value
+    // reenters borrow_mut while sync_spins still holds borrow().
+    let syncing = Rc::new(Cell::new(false));
 
     let root = gtk::Box::new(Orientation::Vertical, 8);
     root.set_margin_top(12);
@@ -187,7 +192,10 @@ pub fn present_workspace_editor(
             if state.borrow().needs_fit {
                 fit_view(&state, width, height);
             }
-            draw_canvas(cr, width, height, &state.borrow());
+            // Clone so draw_canvas never holds a RefCell borrow across
+            // cairo/GTK work that could reenter editor callbacks.
+            let st = state.borrow().clone();
+            draw_canvas(cr, width, height, &st);
         }
     ));
     canvas_col.append(&area);
@@ -229,6 +237,7 @@ pub fn present_workspace_editor(
     let refresh_ui_slot: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
     let refresh_ui: Rc<dyn Fn()> = {
         let state = state.clone();
+        let syncing = syncing.clone();
         let meta = meta.clone();
         let error_banner = error_banner.clone();
         let peer_list = peer_list.clone();
@@ -237,31 +246,36 @@ pub fn present_workspace_editor(
         let spin_y = spin_y.clone();
         let refresh_ui_slot = refresh_ui_slot.clone();
         Rc::new(move || {
-            let st = state.borrow();
-            meta.set_text(&format!(
-                "workspace={}  revision={}  authority={}",
-                if st.draft.workspace_id.is_empty() {
-                    "(none)"
-                } else {
-                    &st.draft.workspace_id
-                },
-                st.draft.revision,
-                trunc(&st.draft.authority_fingerprint, 12)
-            ));
-            if st.error.is_empty() {
+            // Snapshot text under a short borrow; never emit GTK
+            // signals while EditorState is borrowed.
+            let (meta_text, error) = {
+                let st = state.borrow();
+                let meta_text = format!(
+                    "workspace={}  revision={}  authority={}",
+                    if st.draft.workspace_id.is_empty() {
+                        "(none)"
+                    } else {
+                        &st.draft.workspace_id
+                    },
+                    st.draft.revision,
+                    trunc(&st.draft.authority_fingerprint, 12)
+                );
+                (meta_text, st.error.clone())
+            };
+            meta.set_text(&meta_text);
+            if error.is_empty() {
                 error_banner.set_visible(false);
                 error_banner.set_text("");
             } else {
                 error_banner.set_visible(true);
-                error_banner.set_text(&st.error);
+                error_banner.set_text(&error);
             }
             while let Some(child) = peer_list.first_child() {
                 peer_list.remove(&child);
             }
-            drop(st);
             let refresh = refresh_ui_slot.borrow().clone();
             rebuild_peer_list(&peer_list, &state, refresh.as_ref());
-            sync_spins(&state, &spin_x, &spin_y);
+            sync_spins(&state, &spin_x, &spin_y, &syncing);
             area.queue_draw();
         })
     };
@@ -324,10 +338,13 @@ pub fn present_workspace_editor(
         #[strong]
         state,
         #[strong]
-        area,
+        syncing,
         #[strong]
-        refresh_ui,
+        area,
         move |spin| {
+            if syncing.get() {
+                return;
+            }
             let mut st = state.borrow_mut();
             let Some(fp) = st.selected.clone() else {
                 return;
@@ -339,15 +356,19 @@ pub fn present_workspace_editor(
             drop(st);
             refresh_preview_routes(&state);
             area.queue_draw();
-            let _ = refresh_ui;
         }
     ));
     spin_y.connect_value_changed(glib::clone!(
         #[strong]
         state,
         #[strong]
+        syncing,
+        #[strong]
         area,
         move |spin| {
+            if syncing.get() {
+                return;
+            }
             let mut st = state.borrow_mut();
             let Some(fp) = st.selected.clone() else {
                 return;
@@ -395,6 +416,7 @@ pub fn present_workspace_editor(
                     gesture.set_state(gtk::EventSequenceState::Denied);
                     return;
                 };
+                gesture.set_state(gtk::EventSequenceState::Claimed);
                 st.selected = Some(fp.clone());
                 let origin = st
                     .draft
@@ -409,6 +431,8 @@ pub fn present_workspace_editor(
         drag.connect_drag_update(glib::clone!(
             #[strong]
             state,
+            #[strong]
+            syncing,
             #[strong]
             area,
             #[strong]
@@ -429,7 +453,8 @@ pub fn present_workspace_editor(
                     p.origin_y = wy - oy;
                 }
                 drop(st);
-                sync_spins(&state, &spin_x, &spin_y);
+                sync_spins(&state, &spin_x, &spin_y, &syncing);
+                refresh_preview_routes(&state);
                 area.queue_draw();
             }
         ));
@@ -646,20 +671,37 @@ fn rebuild_peer_list(
     }
 }
 
-fn sync_spins(state: &Rc<RefCell<EditorState>>, spin_x: &SpinButton, spin_y: &SpinButton) {
+/// Selected placement origin in world coords, if any.
+fn selected_origin(state: &Rc<RefCell<EditorState>>) -> Option<(i32, i32)> {
     let st = state.borrow();
-    let Some(fp) = st.selected.as_ref() else {
+    let fp = st.selected.as_ref()?;
+    st.draft
+        .placements
+        .iter()
+        .find(|p| p.fingerprint == *fp)
+        .map(|p| (p.origin_x, p.origin_y))
+}
+
+fn sync_spins(
+    state: &Rc<RefCell<EditorState>>,
+    spin_x: &SpinButton,
+    spin_y: &SpinButton,
+    syncing: &Cell<bool>,
+) {
+    let Some((origin_x, origin_y)) = selected_origin(state) else {
         return;
     };
-    let Some(p) = st.draft.placements.iter().find(|p| p.fingerprint == *fp) else {
-        return;
-    };
-    if (spin_x.value() - f64::from(p.origin_x)).abs() > f64::EPSILON {
-        spin_x.set_value(f64::from(p.origin_x));
+    // Programmatic set_value emits value-changed synchronously; the
+    // syncing flag makes those handlers no-ops so they never borrow_mut
+    // while callers still hold state.
+    syncing.set(true);
+    if (spin_x.value() - f64::from(origin_x)).abs() > f64::EPSILON {
+        spin_x.set_value(f64::from(origin_x));
     }
-    if (spin_y.value() - f64::from(p.origin_y)).abs() > f64::EPSILON {
-        spin_y.set_value(f64::from(p.origin_y));
+    if (spin_y.value() - f64::from(origin_y)).abs() > f64::EPSILON {
+        spin_y.set_value(f64::from(origin_y));
     }
+    syncing.set(false);
 }
 
 fn host_rects(ws: &WorkspaceIpc, fingerprint: &str) -> Vec<(i32, i32, u32, u32)> {
@@ -1012,4 +1054,54 @@ fn trunc(s: &str, n: usize) -> String {
 #[allow(dead_code)]
 fn _device_label(d: &WorkspaceDeviceIpc) -> &str {
     d.label.as_str()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn editor_with_placement(fp: &str, x: i32, y: i32, selected: bool) -> Rc<RefCell<EditorState>> {
+        let mut draft = WorkspaceIpc::default();
+        draft.placements.push(WorkspacePlacementIpc {
+            fingerprint: fp.to_string(),
+            origin_x: x,
+            origin_y: y,
+        });
+        Rc::new(RefCell::new(EditorState {
+            committed: draft.clone(),
+            draft,
+            selected: selected.then(|| fp.to_string()),
+            snap: true,
+            zoom: 1.0,
+            view: ViewTransform::default(),
+            error: String::new(),
+            drag: None,
+            needs_fit: false,
+        }))
+    }
+
+    #[test]
+    fn selected_origin_returns_selected_placement() {
+        let state = editor_with_placement("peer-a", 120, -40, true);
+        assert_eq!(selected_origin(&state), Some((120, -40)));
+    }
+
+    #[test]
+    fn selected_origin_none_when_unselected() {
+        let state = editor_with_placement("peer-a", 120, -40, false);
+        assert_eq!(selected_origin(&state), None);
+    }
+
+    #[test]
+    fn syncing_guard_predicate_matches_spin_handler_contract() {
+        // Spin value-changed handlers early-return while syncing is set,
+        // which is the contract that prevents RefCell reentrancy during
+        // programmatic set_value from sync_spins.
+        let syncing = Cell::new(false);
+        assert!(!syncing.get(), "user edits must not be suppressed");
+        syncing.set(true);
+        assert!(syncing.get(), "programmatic sync must suppress handlers");
+        syncing.set(false);
+        assert!(!syncing.get());
+    }
 }
