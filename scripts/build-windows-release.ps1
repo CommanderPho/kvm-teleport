@@ -95,7 +95,34 @@ function Stop-MousehopLockingPaths {
     foreach ($proc in $locked) {
         Stop-Process -Id $proc.ProcessId -Force -ErrorAction Stop
     }
-    Start-Sleep -Milliseconds 400
+    # Windows keeps mapped DLL handles briefly after the process exits.
+    Start-Sleep -Milliseconds 800
+}
+
+function Remove-StageFolder {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [int]$Attempts = 8
+    )
+    if (-not (Test-Path $Path)) {
+        return
+    }
+    $delayMs = 250
+    for ($i = 1; $i -le $Attempts; $i++) {
+        try {
+            Remove-Item -Recurse -Force $Path -ErrorAction Stop
+            return
+        } catch {
+            if ($i -eq $Attempts) {
+                throw
+            }
+            Write-Host "==> stage folder still locked (attempt $i/$Attempts); retrying in ${delayMs}ms..."
+            Stop-MousehopLockingPaths -PathPrefixes @($exeFull, $stageFull)
+            Start-Sleep -Milliseconds $delayMs
+            $delayMs = [Math]::Min($delayMs * 2, 4000)
+        }
+    }
 }
 
 Stop-MousehopLockingPaths -PathPrefixes @($exeFull, $stageFull)
@@ -113,9 +140,7 @@ if (-not (Test-Path $exe)) {
 # In case something relaunched during the build, clear locks again before restage.
 Stop-MousehopLockingPaths -PathPrefixes @($exeFull, $stageFull)
 
-if (Test-Path $stage) {
-    Remove-Item -Recurse -Force $stage
-}
+Remove-StageFolder -Path $stage
 # gdk-pixbuf loads SVG only through this module. bin\*.dll includes
 # rsvg-2-*.dll but not the loader; without it the tray glyph is blank.
 $pixbufLoaderRel = "lib\gdk-pixbuf-2.0\2.10.0\loaders\pixbufloader_svg.dll"

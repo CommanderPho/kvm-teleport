@@ -527,6 +527,50 @@ impl MousehopConnection {
         Err(MousehopConnectionError::NotConnected)
     }
 
+    /// Eagerly start (or reuse) the outgoing DTLS dial for `handle`
+    /// without sending any input events. The ordinary dial is lazy —
+    /// [`Self::send`] only spawns it when the first event (an `Enter`
+    /// on a screen-edge crossing) needs a transport — so a frontend
+    /// that wants the peer's fingerprint before any crossing (Setup
+    /// Layout) must ask for the connection explicitly. Returns `true`
+    /// when a dial is in flight or already established, `false` when
+    /// the retry gate is still cooling down after a failed attempt.
+    pub(crate) async fn connect_handle(&self, handle: ClientHandle) -> bool {
+        if self.client_manager.active_addr(handle).is_some() {
+            log::debug!("client {handle}: connect requested, transport already established");
+            return true;
+        }
+        let mut connecting = self.connecting.lock().await;
+        if connecting.contains_key(&handle) {
+            log::debug!("client {handle}: connect requested, dial already in flight");
+            return true;
+        }
+        if !self.should_attempt(handle) {
+            log::debug!("client {handle}: connect requested but retry gate is cooling down");
+            return false;
+        }
+        self.client_manager.set_active_addr(handle, None);
+        self.client_manager.set_alive(handle, false);
+        let session = self.sessions.allocate(handle);
+        connecting.insert(handle, session);
+        log::info!("client {handle}: eager connect requested (no input sent)");
+        spawn_local(connect_to_handle(
+            self.client_manager.clone(),
+            self.cert.clone(),
+            handle,
+            session,
+            self.conns.clone(),
+            self.sessions.clone(),
+            self.connecting.clone(),
+            self.recv_tx.clone(),
+            self.ping_response.clone(),
+            self.ping_sent_at.clone(),
+            self.primary_hints.clone(),
+            self.retry_state.clone(),
+        ));
+        true
+    }
+
     /// Send only on the exact already-established DTLS session. Unlike
     /// [`Self::send`], this never starts a connection and never falls through
     /// to a replacement session. It is used for atomic handover retries,
@@ -669,7 +713,16 @@ impl MousehopConnection {
                 s.backoff = INITIAL_RETRY_BACKOFF;
                 true
             }
-            Some(s) => Instant::now() >= s.next_attempt_at,
+            Some(s) => {
+                let ready = Instant::now() >= s.next_attempt_at;
+                if !ready {
+                    log::debug!(
+                        "client {handle}: dial suppressed by retry gate for another {:?}",
+                        s.next_attempt_at.saturating_duration_since(Instant::now())
+                    );
+                }
+                ready
+            }
         }
     }
 }
@@ -760,6 +813,11 @@ async fn connect_to_handle(
             // DTLS work or spamming logs on every subsequent mouse
             // event — `should_attempt` will keep gating until either
             // the backoff elapses or new info arrives.
+            log::warn!(
+                "client {handle}: no usable addresses to dial (hostname {:?}, port {port}); \
+                 waiting for DNS/mDNS resolution or a fixed IP",
+                client_manager.get_hostname(handle)
+            );
             record_retry_failure(&retry_state, handle, &ips_set, primary_ip);
             finish_failed_dial(&connecting, &sessions, handle, session).await;
             return Err(MousehopConnectionError::NotConnected);
@@ -768,6 +826,7 @@ async fn connect_to_handle(
         let (conn, addr) = match res {
             Ok(c) => c,
             Err(e) => {
+                log::warn!("client {handle}: all connect attempts failed: {e}");
                 record_retry_failure(&retry_state, handle, &ips_set, primary_ip);
                 finish_failed_dial(&connecting, &sessions, handle, session).await;
                 return Err(e);
@@ -864,6 +923,7 @@ async fn connect_to_handle(
         ));
         return Ok(());
     }
+    log::warn!("client {handle}: no client state (removed before dial); aborting connect");
     finish_failed_dial(&connecting, &sessions, handle, session).await;
     Err(MousehopConnectionError::NotConnected)
 }
@@ -1083,6 +1143,11 @@ async fn receive_loop(
                     break;
                 }
                 hello_ok.set(true);
+                log::info!(
+                    "client {handle}: mousehop handshake complete with {addr} \
+                     (commit {}, capabilities {capabilities:#x})",
+                    String::from_utf8_lossy(&commit)
+                );
                 client_manager.set_peer_commit(handle, Some(commit));
                 // Forward to capture.rs so Service can
                 // broadcast — without this the GUI's
@@ -1726,5 +1791,22 @@ mod tests {
                 .await,
             Err(MousehopConnectionError::NotConnected)
         ));
+    }
+
+    #[tokio::test]
+    async fn eager_connect_reuses_established_transport_without_redial() {
+        let client_manager = ClientManager::default();
+        let handle = client_manager.add_client();
+        let addr: SocketAddr = "127.0.0.1:4242".parse().expect("test address");
+        client_manager.set_active_addr(handle, Some(addr));
+        let cert = Certificate::generate_self_signed(["mousehop-eager-connect-test".to_owned()])
+            .expect("test certificate");
+        let connection =
+            MousehopConnection::new(cert, client_manager.clone(), PrimaryCache::default());
+
+        assert!(connection.connect_handle(handle).await);
+        assert_eq!(client_manager.active_addr(handle), Some(addr));
+        assert!(connection.connecting.lock().await.is_empty());
+        assert_eq!(connection.sessions.current(handle), None);
     }
 }

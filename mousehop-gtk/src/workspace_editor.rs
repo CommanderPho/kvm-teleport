@@ -89,8 +89,8 @@ pub fn present_workspace_editor(
     let editable = initial.is_authority;
     // Prefer caller-provided selection (Setup Layout) even if the peer
     // is only seeded into the draft on a subsequent WorkspaceUpdated.
-    let selected = initial_selected
-        .or_else(|| initial.placements.first().map(|p| p.fingerprint.clone()));
+    let selected =
+        initial_selected.or_else(|| initial.placements.first().map(|p| p.fingerprint.clone()));
     let state = Rc::new(RefCell::new(EditorState {
         committed: initial.clone(),
         draft: initial.clone(),

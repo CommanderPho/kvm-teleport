@@ -373,10 +373,10 @@ impl Service {
                 _ = self.frontend_event_pending.notified() => self.handle_frontend_pending().await,
                 event = self.emulation.event() => self.handle_emulation_event(event).await,
                 event = self.capture.event() => self.handle_capture_event(event).await,
-                event = self.resolver.event() => self.handle_resolver_event(event),
+                event = self.resolver.event() => self.handle_resolver_event(event).await,
                 result = self.latency.event() => self.handle_probe_result(result).await,
                 event = recv_discovery(&mut self.discovery_event_rx) => {
-                    self.handle_discovery_event(event)
+                    self.handle_discovery_event(event).await
                 }
                 _ = self.config.changed() => self.handle_config_change().await,
                 _ = discovery_refresh_tick.tick() => self.on_discovery_refresh().await,
@@ -412,6 +412,17 @@ impl Service {
             FrontendRequest::Activate(handle, active) => {
                 self.set_client_active(handle, active);
                 self.save_config().await;
+            }
+            FrontendRequest::Connect(handle) => {
+                log::info!("frontend requested eager connect for client {handle}");
+                self.resolve(handle);
+                let started = self.conn.connect_handle(handle).await;
+                if !started {
+                    log::debug!(
+                        "client {handle}: eager connect deferred by retry gate; \
+                         will dial when candidates change or backoff elapses"
+                    );
+                }
             }
             FrontendRequest::AuthorizeKey(desc, fp) => {
                 self.add_authorized_key(desc, fp);
@@ -708,11 +719,7 @@ impl Service {
                 peer_topology,
             });
         }
-        seed_legacy_placements(
-            &self.public_key_fingerprint,
-            local_topo.as_ref(),
-            &outgoing,
-        )
+        seed_legacy_placements(&self.public_key_fingerprint, local_topo.as_ref(), &outgoing)
     }
 
     fn local_hostname_label(&self) -> Option<String> {
@@ -760,8 +767,7 @@ impl Service {
             local_host.as_deref(),
             outgoing_host.as_deref(),
             auth.as_ref().map(|c| c.description.as_str()),
-            auth.as_ref()
-                .and_then(|c| c.last_hostname.as_deref()),
+            auth.as_ref().and_then(|c| c.last_hostname.as_deref()),
         );
         let displays = self
             .workspace
@@ -842,10 +848,7 @@ impl Service {
             }
         } else {
             let seed = self.legacy_workspace_placements();
-            match self
-                .workspace
-                .ensure_authority_workspace("default", seed)
-            {
+            match self.workspace.ensure_authority_workspace("default", seed) {
                 Ok(()) => {
                     self.push_spatial_routing();
                     self.notify_frontend(FrontendEvent::WorkspaceUpdated(self.workspace_ipc()));
@@ -1464,7 +1467,13 @@ impl Service {
             ICaptureEvent::PeerCommitUpdated(handle) => {
                 self.broadcast_client(handle);
                 if let Some(fp) = self.conn.peer_fingerprint(handle).await {
+                    log::info!("client {handle}: identified peer fingerprint {fp}");
                     self.note_outgoing_peer_fingerprint(handle, fp);
+                } else {
+                    log::debug!(
+                        "client {handle}: peer commit updated but no authenticated \
+                         fingerprint available yet"
+                    );
                 }
             }
             ICaptureEvent::PeerCapabilities {
@@ -1511,7 +1520,7 @@ impl Service {
         }
     }
 
-    fn handle_resolver_event(&mut self, event: DnsEvent) {
+    async fn handle_resolver_event(&mut self, event: DnsEvent) {
         let handle = match event {
             DnsEvent::Resolving(handle) => {
                 self.client_manager.set_resolving(handle, true);
@@ -1519,11 +1528,13 @@ impl Service {
             }
             DnsEvent::Resolved(handle, hostname, ips) => {
                 self.client_manager.set_resolving(handle, false);
-                if let Err(e) = &ips {
-                    log::warn!("could not resolve {hostname}: {e}");
+                match &ips {
+                    Ok(ips) => log::info!("resolved {hostname} -> {ips:?}"),
+                    Err(e) => log::warn!("could not resolve {hostname}: {e}"),
                 }
                 let ips = ips.unwrap_or_default();
                 self.client_manager.set_dns_ips(handle, ips);
+                self.eager_connect_if_pending(handle).await;
                 handle
             }
         };
@@ -1533,6 +1544,25 @@ impl Service {
     fn resolve(&self, handle: ClientHandle) {
         if let Some(hostname) = self.client_manager.get_hostname(handle) {
             self.resolver.resolve(handle, hostname);
+        }
+    }
+
+    /// Kick an eager dial for an active client that has no transport
+    /// yet. Called when new candidate addresses land (DNS or mDNS), so
+    /// a Setup Layout `Connect` request issued before resolution
+    /// completes still dials as soon as there is something to dial —
+    /// without waiting for a screen-edge crossing. No-op for clients
+    /// that are already connected, dialing, or inactive.
+    async fn eager_connect_if_pending(&mut self, handle: ClientHandle) {
+        let active = self
+            .client_manager
+            .get_state(handle)
+            .is_some_and(|(_, s)| s.active);
+        if !active || self.client_manager.active_addr(handle).is_some() {
+            return;
+        }
+        if self.conn.connect_handle(handle).await {
+            log::debug!("client {handle}: dial (re)started after candidate update");
         }
     }
 
@@ -1589,7 +1619,7 @@ impl Service {
     /// configured hostname matches the mDNS instance: add the
     /// discovered addresses to the candidate set and record per-address
     /// interface kinds. Re-broadcasts only the clients that changed.
-    fn handle_discovery_event(&mut self, event: DiscoveryEvent) {
+    async fn handle_discovery_event(&mut self, event: DiscoveryEvent) {
         let DiscoveryEvent::Resolved {
             instance,
             addresses,
@@ -1620,6 +1650,7 @@ impl Service {
             }
             if discovered_changed || interfaces_changed {
                 self.broadcast_client(handle);
+                self.eager_connect_if_pending(handle).await;
             }
         }
     }
@@ -1839,6 +1870,7 @@ impl Service {
 
         /* deactivate potential other client at this position */
         let Some(pos) = self.client_manager.get_pos(handle) else {
+            log::warn!("cannot activate client {handle}: no position configured");
             return;
         };
 
@@ -1862,6 +1894,8 @@ impl Service {
             );
             self.broadcast_client(handle);
             log::info!("activated client {handle} ({pos})");
+        } else {
+            log::debug!("client {handle} already active; activation is a no-op");
         }
     }
 

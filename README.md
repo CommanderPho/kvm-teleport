@@ -127,6 +127,20 @@ rather than waiting for the command to finish.
 Crashes are recorded either way, at
 `%LOCALAPPDATA%\Mousehop\logs\panic.log`.
 
+**Logs.** Every launch also writes a runtime log — GUI and daemon keep
+separate files so their records never interleave:
+
+- `%LOCALAPPDATA%\Mousehop\logs\mousehop-gui.log`
+- `%LOCALAPPDATA%\Mousehop\logs\mousehop-daemon.log`
+
+Connection setup (DNS resolution, dial attempts, DTLS/handshake failures)
+is logged there even when no console is attached, which is where to look
+when Setup Layout or a peer connection fails. The file logs at `info` by
+default; set `MOUSEHOP_LOG_LEVEL=debug` (or `trace` for per-event wire
+dumps) before launching for more detail. Each file rotates to `.log.old`
+at 5 MB. On macOS the same files live in `~/Library/Logs/Mousehop/`, on
+Linux in `~/.local/state/mousehop/`.
+
 </details>
 
 

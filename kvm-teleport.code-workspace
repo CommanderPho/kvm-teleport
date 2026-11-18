@@ -6,7 +6,7 @@
 	],
 	"settings": {
 		"specstory.cloudSync.enabled": "never",
-		"workbench.colorTheme": "Default Dark Modern",
+		"workbench.colorTheme": "Dark Modern",
 		"workbench.colorCustomizations": {
 			"foreground": "#e8d5d5",
 			"focusBorder": "#8b1a2b",

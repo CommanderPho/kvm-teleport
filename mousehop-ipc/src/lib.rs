@@ -751,6 +751,12 @@ pub struct RunningApp {
 pub enum FrontendRequest {
     /// activate/deactivate client
     Activate(ClientHandle, bool),
+    /// Eagerly establish the outgoing DTLS connection to a client
+    /// without sending any input events and without changing its
+    /// active flag. Used by Setup Layout to identify the peer
+    /// (fingerprint) before a shared layout is applied; the ordinary
+    /// dial is lazy and only starts on the first screen-edge crossing.
+    Connect(ClientHandle),
     /// add a new client
     Create,
     /// change the listen port (recreate udp listener)

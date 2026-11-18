@@ -619,8 +619,13 @@ impl Window {
             self.request_setup_layout_workspace(fp);
         } else {
             self.show_toast(&format!("Connecting to {hostname}…"));
+            log::info!("setup layout: requesting eager connect to {hostname} (handle {handle})");
             self.imp().pending_setup_handle.set(Some(handle));
-            self.request(FrontendRequest::Activate(handle, true));
+            // Eager dial only — no input events, no activation side
+            // effects. The daemon identifies the peer (fingerprint)
+            // and broadcasts it; `on_setup_layout_fingerprint` then
+            // opens the editor.
+            self.request(FrontendRequest::Connect(handle));
         }
         self.arm_setup_layout_timeout(generation);
     }
@@ -629,14 +634,13 @@ impl Window {
         if self.imp().pending_setup_handle.get() != Some(handle) {
             return;
         }
+        log::info!("setup layout: peer identified ({fingerprint}); opening shared layout");
         self.imp().pending_setup_handle.set(None);
         self.request_setup_layout_workspace(fingerprint.to_string());
     }
 
     fn request_setup_layout_workspace(&self, fingerprint: String) {
-        self.imp()
-            .pending_setup_open
-            .replace(Some(fingerprint));
+        self.imp().pending_setup_open.replace(Some(fingerprint));
         self.request(FrontendRequest::GetWorkspace);
         // If a WorkspaceUpdated is already cached and arrives slowly,
         // also open from the current snapshot after a short beat so an
@@ -680,7 +684,13 @@ impl Window {
             }
             window.imp().pending_setup_handle.set(None);
             window.imp().pending_setup_open.replace(None);
-            window.show_toast("Could not connect or identify peer for Setup Layout");
+            log::warn!(
+                "setup layout: timed out after {SETUP_LAYOUT_TIMEOUT_SECS}s waiting for peer \
+                 identity; see the Mousehop log file for dial/DNS details"
+            );
+            window.show_toast(
+                "Could not connect or identify peer for Setup Layout — see Mousehop log for details",
+            );
         });
     }
 
@@ -924,17 +934,23 @@ impl Window {
         // An Apply bumps revision (or first-applies from revision 0). Clear
         // Setup Layout gates for peers now present in placements.
         if applied && ws.revision > prev_revision {
-            let placed: std::collections::HashSet<&str> =
-                ws.placements.iter().map(|p| p.fingerprint.as_str()).collect();
-            self.imp().setup_awaiting_apply.borrow_mut().retain(|handle| {
-                let Some(client) = self.client_object_for_handle(*handle) else {
-                    return false;
-                };
-                match client.peer_fingerprint() {
-                    Some(fp) if placed.contains(fp.as_str()) => false,
-                    _ => true,
-                }
-            });
+            let placed: std::collections::HashSet<&str> = ws
+                .placements
+                .iter()
+                .map(|p| p.fingerprint.as_str())
+                .collect();
+            self.imp()
+                .setup_awaiting_apply
+                .borrow_mut()
+                .retain(|handle| {
+                    let Some(client) = self.client_object_for_handle(*handle) else {
+                        return false;
+                    };
+                    match client.peer_fingerprint() {
+                        Some(fp) if placed.contains(fp.as_str()) => false,
+                        _ => true,
+                    }
+                });
         }
         self.imp().workspace_revision.set(ws.revision);
         *self.imp().workspace.borrow_mut() = ws.clone();
