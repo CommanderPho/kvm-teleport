@@ -42,6 +42,8 @@ export PATH="${cargo_bin}:${brew_prefix}/bin:${PATH}"
 
 echo "==> rustc host: $rustc_host (Homebrew: $brew_prefix)"
 echo "==> rustc: $(command -v rustc)"
+echo "==> ensuring stable Mousehop Dev code-signing identity"
+scripts/create-macos-dev-cert.sh
 echo "==> generating icons"
 scripts/makeicns.sh
 
@@ -53,10 +55,12 @@ binary="$app/Contents/MacOS/mousehop"
 echo "==> vendoring dylibs into $app"
 scripts/copy-macos-dylib.sh "$binary"
 
+# Sync into a stable path so launches always hit the same .app. Prefer rsync
+# over rm+cp so the bundle directory is updated in place.
 dev_app="MousehopDev.app"
-echo "==> copying to $root/$dev_app"
-rm -rf "$dev_app"
-cp -R "$app" "$dev_app"
+echo "==> syncing to $root/$dev_app"
+mkdir -p "$dev_app"
+rsync -a --delete "$app/" "$dev_app/"
 
 echo "==> done: $root/$app"
 echo "==> done: $root/$dev_app"
