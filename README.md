@@ -272,15 +272,25 @@ cargo install --path . --force
 `rust-toolchain.toml` pins Rust **1.95.0**. Build the `.app` from the `mousehop/` crate directory so cargo-bundle resolves the icon, menu-bar template, and `osx.info_plist_exts` globs against that CWD (running from the workspace root silently drops them):
 
 ```sh
-# Create the macOS icon + menu-bar template under target/
+# Preferred: full local release build (creates a stable "Mousehop Dev"
+# signing identity if needed, vendors dylibs, syncs MousehopDev.app)
+scripts/build-macos-release.sh
+
+# Or step by step:
+scripts/create-macos-dev-cert.sh   # once; idempotent
 scripts/makeicns.sh
-# Create the .app bundle (release)
 (cd mousehop && cargo bundle --release)
-# Vendor Homebrew dylibs into the bundle, flatten the menu-bar PNG, ad-hoc sign
 scripts/copy-macos-dylib.sh target/release/bundle/osx/Mousehop.app/Contents/MacOS/mousehop
 ```
 
-The finished app is at `target/release/bundle/osx/Mousehop.app`.
+The finished app is at `target/release/bundle/osx/Mousehop.app`; the Build Exe task also syncs it to `MousehopDev.app` at the repo root.
+
+**Stable local signing (TCC).** Ad-hoc signatures (`codesign -s -`) pin Accessibility / Input Monitoring grants to a per-build cdhash, so every rebuild looks like a new app. `scripts/create-macos-dev-cert.sh` installs a self-signed **"Mousehop Dev"** identity in your login keychain; `copy-macos-dylib.sh` prefers that identity when present. After the first signed build, re-enable Mousehop once under System Settings → Privacy & Security → Accessibility (old ad-hoc grants do not transfer). Later rebuilds keep the grant. Verify with:
+
+```sh
+codesign -d -r- MousehopDev.app
+# expect: certificate leaf = H"…", not cdhash
+```
 </details>
 
 <details>
