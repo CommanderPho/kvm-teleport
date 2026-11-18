@@ -16,7 +16,7 @@ todos:
     status: completed
   - id: verify-drag
     content: Rebuild Windows release; manual drag/snap/apply/revert/zoom check with no panic
-    status: in_progress
+    status: completed
 isProject: false
 ---
 

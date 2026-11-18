@@ -185,7 +185,18 @@ impl WorkspaceState {
     }
 
     /// Authority applies a validated draft. Followers must use [`accept_remote`].
-    pub fn apply_local(&mut self, mut config: WorkspaceConfig) -> Result<(), WorkspaceStateError> {
+    pub fn apply_local(&mut self, config: WorkspaceConfig) -> Result<(), WorkspaceStateError> {
+        let topologies = self.topologies.clone();
+        self.apply_local_with_topologies(config, &topologies)
+    }
+
+    /// Like [`apply_local`], but validates routes against `topologies` (e.g. live
+    /// map with IPC-device fallbacks) so GUI and daemon agree on geometry.
+    pub fn apply_local_with_topologies(
+        &mut self,
+        mut config: WorkspaceConfig,
+        topologies: &BTreeMap<PeerFingerprint, LocalTopology>,
+    ) -> Result<(), WorkspaceStateError> {
         config.validate()?;
         if config.authority_fingerprint != self.local_fingerprint {
             return Err(WorkspaceStateError::Unauthorized(
@@ -202,10 +213,11 @@ impl WorkspaceState {
         } else if config.revision == 0 {
             config.revision = 1;
         }
-        // Validate routing against currently known topologies (offline peers ok).
-        let _ = derive_routes(&config, &self.topologies)?;
+        // Validate first; only then commit config + snapshot so a failed
+        // apply cannot leave in-memory state ahead of disk.
+        let snap = derive_routes(&config, topologies)?;
         self.config = Some(config);
-        self.rebuild_snapshot()?;
+        self.snapshot = Some(snap);
         self.save_to_disk()?;
         Ok(())
     }
@@ -548,6 +560,64 @@ mod tests {
             err,
             WorkspaceStateError::StaleRevision { got: 4, have: 5 }
         ));
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn failed_apply_leaves_prior_config_unchanged() {
+        let dir = temp_workspace_dir("overlap");
+        let mut state = WorkspaceState::new(&dir, "auth".into());
+        state
+            .set_topology("auth".into(), topo_one("a", 1000, 1000))
+            .unwrap();
+        state
+            .set_topology("peer".into(), topo_one("b", 1000, 1000))
+            .unwrap();
+        state
+            .apply_local(WorkspaceConfig {
+                workspace_id: "ws".into(),
+                revision: 1,
+                authority_fingerprint: "auth".into(),
+                placements: vec![
+                    DevicePlacement {
+                        peer_fingerprint: "auth".into(),
+                        origin_in_workspace: (0, 0),
+                    },
+                    DevicePlacement {
+                        peer_fingerprint: "peer".into(),
+                        origin_in_workspace: (1000, 0),
+                    },
+                ],
+            })
+            .unwrap();
+        let before = state.config().cloned().unwrap();
+        let topologies = state.topologies().clone();
+        let err = state
+            .apply_local_with_topologies(
+                WorkspaceConfig {
+                    workspace_id: "ws".into(),
+                    revision: 2,
+                    authority_fingerprint: "auth".into(),
+                    placements: vec![
+                        DevicePlacement {
+                            peer_fingerprint: "auth".into(),
+                            origin_in_workspace: (0, 0),
+                        },
+                        DevicePlacement {
+                            peer_fingerprint: "peer".into(),
+                            // Fully overlaps auth's display.
+                            origin_in_workspace: (0, 0),
+                        },
+                    ],
+                },
+                &topologies,
+            )
+            .unwrap_err();
+        assert!(
+            matches!(err, WorkspaceStateError::Geometry(_)),
+            "expected geometry error, got {err}"
+        );
+        assert_eq!(state.config(), Some(&before));
         let _ = fs::remove_dir_all(dir);
     }
 }

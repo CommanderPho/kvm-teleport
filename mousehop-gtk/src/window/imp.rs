@@ -10,11 +10,14 @@ use gtk::{
     Label, ListBox, PropagationPhase, Scale, ScrolledWindow, Switch, gdk, gio, glib,
 };
 
-use mousehop_ipc::{DEFAULT_PORT, FrontendRequest, FrontendRequestWriter, WorkspaceIpc};
+use mousehop_ipc::{DEFAULT_PORT, FrontendRequestWriter, WorkspaceIpc};
 
 use crate::authorization_window::AuthorizationWindow;
 use crate::clipboard_privacy_window::ClipboardPrivacyWindow;
 use crate::lock_recovery_window::LockRecoveryWindow;
+
+type WorkspaceLiveHook = std::rc::Rc<dyn Fn(WorkspaceIpc)>;
+type WorkspaceErrorHook = std::rc::Rc<dyn Fn(String)>;
 
 #[derive(CompositeTemplate, Default)]
 #[template(resource = "/com/mousehop/Mousehop/window.ui")]
@@ -84,11 +87,17 @@ pub struct Window {
     /// Latest shared workspace snapshot from the daemon.
     pub workspace: RefCell<WorkspaceIpc>,
     /// Live update hook while the Shared layout dialog is open.
-    pub workspace_editor_hook: RefCell<Option<std::rc::Rc<dyn Fn(WorkspaceIpc)>>>,
+    pub workspace_editor_hook: RefCell<Option<WorkspaceLiveHook>>,
+    /// Validation-error hook while the Shared layout dialog is open.
+    pub workspace_editor_error_hook: RefCell<Option<WorkspaceErrorHook>>,
     /// Outgoing client handle waiting for a TLS fingerprint during Setup Layout.
     pub pending_setup_handle: Cell<Option<mousehop_ipc::ClientHandle>>,
     /// Fingerprint to select once the next workspace snapshot arrives for Setup Layout.
     pub pending_setup_open: RefCell<Option<String>>,
+    /// When set, open the Shared layout editor on the next WorkspaceUpdated
+    /// (after GetWorkspace). `Some(None)` = no preferred selection;
+    /// `Some(Some(fp))` selects that peer. Avoids opening from a stale cache.
+    pub pending_editor_open: RefCell<Option<Option<String>>>,
     /// Generation counter so Setup Layout timeouts ignore superseded attempts.
     pub pending_setup_generation: Cell<u64>,
     /// Outgoing handles that used Setup Layout and must Apply before Enable.
@@ -156,8 +165,7 @@ impl Window {
             window.show_toast("Apply a shared layout first, or use Setup Layout on a client row.");
             return;
         }
-        window.request(FrontendRequest::GetWorkspace);
-        window.open_workspace_editor(None);
+        window.request_open_workspace_editor(None);
     }
 
     #[template_callback]
@@ -344,8 +352,7 @@ impl ObjectImpl for Window {
                     );
                     return;
                 }
-                window.request(mousehop_ipc::FrontendRequest::GetWorkspace);
-                window.open_workspace_editor(None);
+                window.request_open_workspace_editor(None);
             }
         ));
         self.shared_layout_button.set_sensitive(false);

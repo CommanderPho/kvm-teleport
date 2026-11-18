@@ -72,13 +72,22 @@ struct EditorState {
     drag: Option<(String, i32, i32)>,
     /// Fit once the DrawingArea has a real allocation.
     needs_fit: bool,
+    /// True after Apply until the daemon confirms (`WorkspaceUpdated`)
+    /// or rejects (`WorkspaceValidationError`). Keeps draft dirty so a
+    /// failed apply is not treated as saved.
+    pending_apply: bool,
 }
+
+type RegisterLiveHook = Rc<dyn Fn(Option<Rc<dyn Fn(WorkspaceIpc)>>)>;
+type RegisterErrorHook = Rc<dyn Fn(Option<Rc<dyn Fn(String)>>)>;
+type RefreshUiSlot = Rc<RefCell<Option<Rc<dyn Fn()>>>>;
 
 pub fn present_workspace_editor(
     parent: &impl IsA<gtk::Window>,
     request: Rc<dyn Fn(FrontendRequest)>,
     initial: WorkspaceIpc,
-    register_live: Rc<dyn Fn(Option<Rc<dyn Fn(WorkspaceIpc)>>)>,
+    register_live: RegisterLiveHook,
+    register_error: RegisterErrorHook,
     initial_selected: Option<String>,
 ) {
     let dialog = adw::Window::new();
@@ -102,6 +111,7 @@ pub fn present_workspace_editor(
         error: String::new(),
         drag: None,
         needs_fit: true,
+        pending_apply: false,
     }));
     // Guards spin value-changed handlers while sync_spins writes
     // SpinButton values programmatically. Without this, set_value
@@ -234,7 +244,7 @@ pub fn present_workspace_editor(
 
     dialog.set_content(Some(&root));
 
-    let refresh_ui_slot: Rc<RefCell<Option<Rc<dyn Fn()>>>> = Rc::new(RefCell::new(None));
+    let refresh_ui_slot: RefreshUiSlot = Rc::new(RefCell::new(None));
     let refresh_ui: Rc<dyn Fn()> = {
         let state = state.clone();
         let syncing = syncing.clone();
@@ -527,7 +537,13 @@ pub fn present_workspace_editor(
                     origin_y: 0,
                 });
             }
-            state.borrow_mut().committed = ws.clone();
+            {
+                let mut st = state.borrow_mut();
+                // Do not mark committed until the daemon confirms —
+                // otherwise a validation failure looks like a saved layout.
+                st.pending_apply = true;
+                st.error = "Applying…".into();
+            }
             request(FrontendRequest::ApplyWorkspace(ws));
             refresh_ui();
         }
@@ -542,11 +558,29 @@ pub fn present_workspace_editor(
         }
     });
     register_live(Some(live_hook));
+
+    let error_hook: Rc<dyn Fn(String)> = Rc::new({
+        let state = state.clone();
+        let refresh_ui = refresh_ui.clone();
+        move |msg: String| {
+            {
+                let mut st = state.borrow_mut();
+                st.pending_apply = false;
+                st.error = msg;
+            }
+            refresh_ui();
+        }
+    });
+    register_error(Some(error_hook));
+
     dialog.connect_close_request(glib::clone!(
         #[strong]
         register_live,
+        #[strong]
+        register_error,
         move |_| {
             register_live(None);
+            register_error(None);
             glib::Propagation::Proceed
         }
     ));
@@ -556,10 +590,24 @@ pub fn present_workspace_editor(
 
 /// Merge a daemon workspace snapshot into the open editor.
 ///
-/// If the draft is clean (`draft == committed`), replace both. If the user has
-/// unsaved moves, only append placements/devices for new fingerprints.
+/// A pending Apply confirmation always replaces both draft and committed.
+/// Otherwise: if the draft is clean (`draft == committed`), replace both.
+/// If the user has unsaved moves, only append placements/devices for new
+/// fingerprints.
 fn merge_incoming_workspace(state: &Rc<RefCell<EditorState>>, incoming: WorkspaceIpc) {
     let mut st = state.borrow_mut();
+    if st.pending_apply {
+        let rev = incoming.revision;
+        st.committed = incoming.clone();
+        st.draft = incoming;
+        st.pending_apply = false;
+        st.error = format!("Applied (revision {rev})");
+        st.needs_fit = true;
+        if st.selected.is_none() {
+            st.selected = st.draft.placements.first().map(|p| p.fingerprint.clone());
+        }
+        return;
+    }
     let dirty = st.draft != st.committed;
     if !dirty {
         st.committed = incoming.clone();
@@ -1077,6 +1125,7 @@ mod tests {
             error: String::new(),
             drag: None,
             needs_fit: false,
+            pending_apply: false,
         }))
     }
 
@@ -1103,5 +1152,56 @@ mod tests {
         assert!(syncing.get(), "programmatic sync must suppress handlers");
         syncing.set(false);
         assert!(!syncing.get());
+    }
+
+    #[test]
+    fn pending_apply_merge_replaces_draft_and_clears_flag() {
+        let state = editor_with_placement("peer-a", 0, 0, true);
+        {
+            let mut st = state.borrow_mut();
+            st.draft.placements[0].origin_x = 500;
+            st.pending_apply = true;
+            st.error = "Applying…".into();
+        }
+        let incoming = WorkspaceIpc {
+            workspace_id: "default".into(),
+            revision: 7,
+            placements: vec![WorkspacePlacementIpc {
+                fingerprint: "peer-a".into(),
+                origin_x: 500,
+                origin_y: 0,
+            }],
+            ..Default::default()
+        };
+        merge_incoming_workspace(&state, incoming);
+        let st = state.borrow();
+        assert!(!st.pending_apply);
+        assert_eq!(st.draft.revision, 7);
+        assert_eq!(st.committed.revision, 7);
+        assert_eq!(st.draft.placements[0].origin_x, 500);
+        assert!(st.error.contains("Applied"));
+        assert_eq!(st.draft, st.committed);
+    }
+
+    #[test]
+    fn validation_error_clears_pending_and_leaves_committed() {
+        let state = editor_with_placement("peer-a", 10, 20, true);
+        {
+            let mut st = state.borrow_mut();
+            st.draft.placements[0].origin_x = 999;
+            st.pending_apply = true;
+        }
+        // Mirrors the error hook installed by present_workspace_editor.
+        {
+            let mut st = state.borrow_mut();
+            st.pending_apply = false;
+            st.error = "overlapping workspace displays".into();
+        }
+        let st = state.borrow();
+        assert!(!st.pending_apply);
+        assert_eq!(st.committed.placements[0].origin_x, 10);
+        assert_eq!(st.draft.placements[0].origin_x, 999);
+        assert_ne!(st.draft, st.committed, "failed apply must keep draft dirty");
+        assert!(st.error.contains("overlapping"));
     }
 }

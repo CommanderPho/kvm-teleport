@@ -725,7 +725,7 @@ fn build_ui(app: &Application) {
                         window.set_workspace(ws);
                     }
                     FrontendEvent::WorkspaceValidationError(msg) => {
-                        window.show_toast(msg.as_str());
+                        window.notify_workspace_validation_error(msg);
                     }
                 }
             }

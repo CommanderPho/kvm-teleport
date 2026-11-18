@@ -800,30 +800,46 @@ impl Service {
 
     async fn apply_workspace_ipc(&mut self, ipc: mousehop_ipc::WorkspaceIpc) {
         use input_event::workspace::{DevicePlacement, WorkspaceConfig};
+        let topologies = topologies_for_apply(self.workspace.topologies(), &ipc);
+        let placement_count = ipc.placements.len();
         let config = WorkspaceConfig {
             workspace_id: if ipc.workspace_id.is_empty() {
                 "default".into()
             } else {
-                ipc.workspace_id
+                ipc.workspace_id.clone()
             },
             revision: ipc.revision,
             authority_fingerprint: self.public_key_fingerprint.clone(),
             placements: ipc
                 .placements
-                .into_iter()
+                .iter()
                 .map(|p| DevicePlacement {
-                    peer_fingerprint: p.fingerprint,
+                    peer_fingerprint: p.fingerprint.clone(),
                     origin_in_workspace: (p.origin_x, p.origin_y),
                 })
                 .collect(),
         };
-        match self.workspace.apply_local(config) {
+        match self
+            .workspace
+            .apply_local_with_topologies(config, &topologies)
+        {
             Ok(()) => {
+                let rev = self.workspace.config().map(|c| c.revision).unwrap_or(0);
+                log::info!(
+                    "applied workspace id={} revision={rev} placements={placement_count}",
+                    self.workspace
+                        .config()
+                        .map(|c| c.workspace_id.as_str())
+                        .unwrap_or("?")
+                );
                 self.push_spatial_routing();
                 self.notify_frontend(FrontendEvent::WorkspaceUpdated(self.workspace_ipc()));
                 self.publish_workspace_to_peers().await;
             }
-            Err(e) => self.notify_frontend(FrontendEvent::WorkspaceValidationError(e.to_string())),
+            Err(e) => {
+                log::warn!("apply workspace failed: {e}");
+                self.notify_frontend(FrontendEvent::WorkspaceValidationError(e.to_string()));
+            }
         }
     }
 
@@ -1992,6 +2008,69 @@ impl Service {
     }
 }
 
+/// Topologies used when applying a workspace draft: prefer live peer
+/// topologies, fall back to `ipc.devices` so the daemon validates the
+/// same geometry the GTK editor showed (including peers whose
+/// IdentifiedTopology has not landed yet).
+fn topologies_for_apply(
+    live: &std::collections::BTreeMap<String, input_event::workspace::LocalTopology>,
+    ipc: &mousehop_ipc::WorkspaceIpc,
+) -> std::collections::BTreeMap<String, input_event::workspace::LocalTopology> {
+    let mut map = std::collections::BTreeMap::new();
+    for placement in &ipc.placements {
+        if let Some(topo) = live.get(&placement.fingerprint) {
+            map.insert(placement.fingerprint.clone(), topo.clone());
+            continue;
+        }
+        if let Some(device) = ipc
+            .devices
+            .iter()
+            .find(|d| d.fingerprint == placement.fingerprint)
+        {
+            if let Some(topo) = topology_from_device_ipc(device) {
+                map.insert(placement.fingerprint.clone(), topo);
+            }
+        }
+    }
+    // Keep any live topologies for peers not in this draft (harmless for
+    // derive_routes which only walks placements).
+    for (fp, topo) in live {
+        map.entry(fp.clone()).or_insert_with(|| topo.clone());
+    }
+    map
+}
+
+fn topology_from_device_ipc(
+    device: &mousehop_ipc::WorkspaceDeviceIpc,
+) -> Option<input_event::workspace::LocalTopology> {
+    use input_event::display::DisplayRect;
+    use input_event::workspace::{DisplayId, LocalDisplay, LocalTopology};
+    const PLACEHOLDER_W: u32 = 1920;
+    const PLACEHOLDER_H: u32 = 1080;
+    let displays = if device.displays.is_empty() {
+        vec![LocalDisplay {
+            id: DisplayId::new("placeholder").expect("placeholder id"),
+            rect: DisplayRect::new(0, 0, PLACEHOLDER_W, PLACEHOLDER_H).expect("placeholder rect"),
+            scale: None,
+            rotation: None,
+        }]
+    } else {
+        device
+            .displays
+            .iter()
+            .filter_map(|d| {
+                Some(LocalDisplay {
+                    id: DisplayId::new(d.id.clone())?,
+                    rect: DisplayRect::new(d.x, d.y, d.width, d.height)?,
+                    scale: None,
+                    rotation: None,
+                })
+            })
+            .collect()
+    };
+    LocalTopology::try_new(displays, 1, 1).ok()
+}
+
 /// `tokio::select!` arm helper for the optional [`ClipboardMonitor`].
 /// Resolves to `Some(event)` when the monitor surfaces a change and
 /// to a never-completing future when no monitor is alive — keeping
@@ -2104,5 +2183,76 @@ mod tests {
             addr,
             RemoteHostState::Unlocked,
         ));
+    }
+
+    #[test]
+    fn topologies_for_apply_prefers_live_then_ipc_devices() {
+        use input_event::display::DisplayRect;
+        use input_event::workspace::{DisplayId, LocalDisplay, LocalTopology};
+        use mousehop_ipc::{
+            WorkspaceDeviceIpc, WorkspaceDisplayIpc, WorkspaceIpc, WorkspacePlacementIpc,
+        };
+
+        let live_topo = LocalTopology::try_new(
+            vec![LocalDisplay {
+                id: DisplayId::new("live").unwrap(),
+                rect: DisplayRect::new(0, 0, 1600, 900).unwrap(),
+                scale: None,
+                rotation: None,
+            }],
+            2,
+            3,
+        )
+        .unwrap();
+        let mut live = std::collections::BTreeMap::new();
+        live.insert("peer-live".into(), live_topo.clone());
+
+        let ipc = WorkspaceIpc {
+            placements: vec![
+                WorkspacePlacementIpc {
+                    fingerprint: "peer-live".into(),
+                    origin_x: 0,
+                    origin_y: 0,
+                },
+                WorkspacePlacementIpc {
+                    fingerprint: "peer-ipc".into(),
+                    origin_x: 1600,
+                    origin_y: 0,
+                },
+            ],
+            devices: vec![
+                WorkspaceDeviceIpc {
+                    fingerprint: "peer-live".into(),
+                    label: "Live".into(),
+                    presence: "online".into(),
+                    displays: vec![WorkspaceDisplayIpc {
+                        id: "stale".into(),
+                        x: 0,
+                        y: 0,
+                        width: 800,
+                        height: 600,
+                    }],
+                },
+                WorkspaceDeviceIpc {
+                    fingerprint: "peer-ipc".into(),
+                    label: "Ipc".into(),
+                    presence: "online".into(),
+                    displays: vec![WorkspaceDisplayIpc {
+                        id: "ipc-d0".into(),
+                        x: 0,
+                        y: 0,
+                        width: 1920,
+                        height: 1080,
+                    }],
+                },
+            ],
+            ..Default::default()
+        };
+
+        let map = topologies_for_apply(&live, &ipc);
+        assert_eq!(map.get("peer-live"), Some(&live_topo));
+        let ipc_topo = map.get("peer-ipc").expect("ipc fallback");
+        assert_eq!(ipc_topo.displays[0].id.as_str(), "ipc-d0");
+        assert_eq!(ipc_topo.displays[0].rect.size(), (1920, 1080));
     }
 }

@@ -946,10 +946,10 @@ impl Window {
                     let Some(client) = self.client_object_for_handle(*handle) else {
                         return false;
                     };
-                    match client.peer_fingerprint() {
-                        Some(fp) if placed.contains(fp.as_str()) => false,
-                        _ => true,
-                    }
+                    !matches!(
+                        client.peer_fingerprint(),
+                        Some(fp) if placed.contains(fp.as_str())
+                    )
                 });
         }
         self.imp().workspace_revision.set(ws.revision);
@@ -958,9 +958,18 @@ impl Window {
         if let Some(fp) = self.imp().pending_setup_open.borrow().clone() {
             self.finish_setup_layout_open(fp);
         }
+        if let Some(selection) = self.imp().pending_editor_open.borrow_mut().take() {
+            self.open_workspace_editor(selection);
+        }
         if let Some(hook) = self.imp().workspace_editor_hook.borrow().clone() {
             hook(ws);
         }
+    }
+
+    /// Request a fresh workspace snapshot, then open the editor when it arrives.
+    pub(super) fn request_open_workspace_editor(&self, initial_selected: Option<String>) {
+        *self.imp().pending_editor_open.borrow_mut() = Some(initial_selected);
+        self.request(FrontendRequest::GetWorkspace);
     }
 
     pub(super) fn open_workspace_editor(&self, initial_selected: Option<String>) {
@@ -973,13 +982,26 @@ impl Window {
         let register_live = Rc::new(move |hook: Option<Rc<dyn Fn(WorkspaceIpc)>>| {
             *window.imp().workspace_editor_hook.borrow_mut() = hook;
         }) as Rc<dyn Fn(Option<Rc<dyn Fn(WorkspaceIpc)>>)>;
+        let window = self.clone();
+        let register_error = Rc::new(move |hook: Option<Rc<dyn Fn(String)>>| {
+            *window.imp().workspace_editor_error_hook.borrow_mut() = hook;
+        }) as Rc<dyn Fn(Option<Rc<dyn Fn(String)>>)>;
         crate::workspace_editor::present_workspace_editor(
             self,
             request,
             ws,
             register_live,
+            register_error,
             initial_selected,
         );
+    }
+
+    pub(super) fn notify_workspace_validation_error(&self, msg: String) {
+        if let Some(hook) = self.imp().workspace_editor_error_hook.borrow().clone() {
+            hook(msg);
+        } else {
+            self.show_toast(msg.as_str());
+        }
     }
 
     pub(super) fn add_toast(&self, toast: adw::Toast) {
