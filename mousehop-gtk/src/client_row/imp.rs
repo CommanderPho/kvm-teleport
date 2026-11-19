@@ -254,7 +254,7 @@ impl ClientRow {
     }
 
     #[template_callback]
-    fn handle_setup_layout(&self, _row: &ActionRow) {
+    fn handle_setup_layout(&self, _: &Button) {
         self.obj().emit_by_name::<()>("request-setup-layout", &[]);
     }
 

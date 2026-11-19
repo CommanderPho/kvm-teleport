@@ -294,9 +294,16 @@ impl Window {
                             #[strong]
                             window,
                             move |row: ClientRow| {
-                                if let Some(client) = window.client_by_idx(row.index() as u32) {
-                                    window.begin_setup_layout(&client);
-                                }
+                                // Leave the button/ActionRow click trampoline before
+                                // toasts, IPC, or presenting the layout dialog —
+                                // synchronous work here has aborted on Windows GTK.
+                                let idx = row.index() as u32;
+                                let window = window.clone();
+                                glib::idle_add_local_once(move || {
+                                    if let Some(client) = window.client_by_idx(idx) {
+                                        window.begin_setup_layout(&client);
+                                    }
+                                });
                             }
                         ),
                     );
@@ -972,26 +979,31 @@ impl Window {
 
     pub(super) fn open_workspace_editor(&self, initial_selected: Option<String>) {
         let ws = self.imp().workspace.borrow().clone();
-        let window = self.clone();
-        let request = Rc::new(move |req: FrontendRequest| {
-            window.request(req);
-        }) as Rc<dyn Fn(FrontendRequest)>;
-        let window = self.clone();
-        let register_live = Rc::new(move |hook: Option<Rc<dyn Fn(WorkspaceIpc)>>| {
-            *window.imp().workspace_editor_hook.borrow_mut() = hook;
-        }) as Rc<dyn Fn(Option<Rc<dyn Fn(WorkspaceIpc)>>)>;
-        let window = self.clone();
-        let register_error = Rc::new(move |hook: Option<Rc<dyn Fn(String)>>| {
-            *window.imp().workspace_editor_error_hook.borrow_mut() = hook;
-        }) as Rc<dyn Fn(Option<Rc<dyn Fn(String)>>)>;
-        crate::workspace_editor::present_workspace_editor(
-            self,
-            request,
-            ws,
-            register_live,
-            register_error,
-            initial_selected,
-        );
+        let parent = self.clone();
+        // Present on idle so we never nest a modal AdwWindow inside an
+        // in-flight list-row / IPC callback (Windows GTK has aborted here).
+        glib::idle_add_local_once(move || {
+            let window = parent.clone();
+            let request = Rc::new(move |req: FrontendRequest| {
+                window.request(req);
+            }) as Rc<dyn Fn(FrontendRequest)>;
+            let window = parent.clone();
+            let register_live = Rc::new(move |hook: Option<Rc<dyn Fn(WorkspaceIpc)>>| {
+                *window.imp().workspace_editor_hook.borrow_mut() = hook;
+            }) as Rc<dyn Fn(Option<Rc<dyn Fn(WorkspaceIpc)>>)>;
+            let window = parent.clone();
+            let register_error = Rc::new(move |hook: Option<Rc<dyn Fn(String)>>| {
+                *window.imp().workspace_editor_error_hook.borrow_mut() = hook;
+            }) as Rc<dyn Fn(Option<Rc<dyn Fn(String)>>)>;
+            crate::workspace_editor::present_workspace_editor(
+                &parent,
+                request,
+                ws,
+                register_live,
+                register_error,
+                initial_selected,
+            );
+        });
     }
 
     pub(super) fn notify_workspace_validation_error(&self, msg: String) {
