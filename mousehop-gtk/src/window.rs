@@ -243,9 +243,7 @@ impl Window {
                             move |row: ClientRow, active: bool| {
                                 if let Some(client) = window.client_by_idx(row.index() as u32) {
                                     if active && !window.client_may_activate(&client) {
-                                        window.show_toast(
-                                            "Use Setup Layout to place this peer first",
-                                        );
+                                        window.show_toast("Use Layout to place this peer first");
                                         row.set_active(false);
                                         return;
                                     }
@@ -584,7 +582,7 @@ impl Window {
     fn begin_setup_layout(&self, client: &ClientObject) {
         let hostname: Option<String> = client.property("hostname");
         let Some(hostname) = hostname.filter(|h| !h.is_empty()) else {
-            self.show_toast("Set a hostname before Setup Layout");
+            self.show_toast("Set a hostname before opening Layout");
             return;
         };
 
@@ -689,7 +687,7 @@ impl Window {
                  identity; see the Mousehop log file for dial/DNS details"
             );
             window.show_toast(
-                "Could not connect or identify peer for Setup Layout — see Mousehop log for details",
+                "Could not connect or identify peer for Layout — see Mousehop log for details",
             );
         });
     }

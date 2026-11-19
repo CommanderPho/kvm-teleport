@@ -61,9 +61,9 @@ prefixes.
 
 ## GUI planner
 
-### First-time setup (Setup Layout)
+### First-time setup (Layout)
 
-On each outgoing client row, **Setup Layout**:
+On each outgoing client row, **Layout**:
 
 1. Requires a hostname.
 2. Connects the peer (`Activate`) and waits for its TLS fingerprint.
@@ -73,14 +73,14 @@ On each outgoing client row, **Setup Layout**:
    switch may turn capture on for that peer.
 
 Until a peer is placed (fingerprint present in applied placements), enabling the
-outgoing client is blocked with a toast pointing at Setup Layout.
+outgoing client is blocked with a toast pointing at Layout.
 
 ### Editing an applied workspace (Shared layout…)
 
 **Outgoing Connections → Shared layout…** (and About → build row) is **edit-only**.
 It is sensitive only when a workspace has already been applied
 (`workspace_id` non-empty and `revision > 0`). First-time placement uses
-**Setup Layout** on the client row, not this button.
+**Layout** on the client row, not this button.
 
 In the editor:
 
