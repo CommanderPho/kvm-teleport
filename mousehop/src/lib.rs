@@ -10,6 +10,7 @@ mod discovery;
 mod dns;
 mod emulation;
 pub mod emulation_test;
+pub mod file_log;
 pub mod firewall;
 mod latency;
 mod listen;
@@ -24,3 +25,5 @@ pub mod panic_log;
 pub mod service;
 #[cfg(windows)]
 pub mod windows_console;
+mod workspace_legacy;
+mod workspace_state;

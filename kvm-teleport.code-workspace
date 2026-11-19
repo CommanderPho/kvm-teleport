@@ -5,6 +5,422 @@
 		}
 	],
 	"settings": {
-		"specstory.cloudSync.enabled": "never"
+		"specstory.cloudSync.enabled": "never",
+		"workbench.colorTheme": "Dark Modern",
+		"workbench.colorCustomizations": {
+			"foreground": "#e8d5d5",
+			"focusBorder": "#8b1a2b",
+			"selection.background": "#6b1524aa",
+			"widget.shadow": "#00000088",
+			"descriptionForeground": "#b89a9a",
+			"errorForeground": "#ff6b6b",
+			"icon.foreground": "#c9a0a0",
+
+			"editor.background": "#0a0506",
+			"editor.foreground": "#e8d5d5",
+			"editor.lineHighlightBackground": "#1a0a0c",
+			"editor.lineHighlightBorder": "#2a1014",
+			"editor.selectionBackground": "#6b152466",
+			"editor.selectionHighlightBackground": "#4a101855",
+			"editor.inactiveSelectionBackground": "#3a0c1244",
+			"editor.findMatchBackground": "#8b1a2b88",
+			"editor.findMatchHighlightBackground": "#6b152455",
+			"editor.wordHighlightBackground": "#5a142044",
+			"editor.wordHighlightStrongBackground": "#7a1a2a55",
+			"editorCursor.foreground": "#e85a6a",
+			"editorWhitespace.foreground": "#3a2024",
+			"editorIndentGuide.background1": "#2a1518",
+			"editorIndentGuide.activeBackground1": "#6b1524",
+			"editorLineNumber.foreground": "#5a3035",
+			"editorLineNumber.activeForeground": "#c07078",
+			"editorGutter.background": "#0a0506",
+			"editorGutter.modifiedBackground": "#c9a227",
+			"editorGutter.addedBackground": "#3d8b5a",
+			"editorGutter.deletedBackground": "#8b1a2b",
+			"editorBracketMatch.background": "#6b152440",
+			"editorBracketMatch.border": "#8b1a2b",
+			"editorWidget.background": "#12080a",
+			"editorWidget.border": "#3a151a",
+			"editorSuggestWidget.background": "#12080a",
+			"editorSuggestWidget.border": "#3a151a",
+			"editorSuggestWidget.selectedBackground": "#6b1524",
+			"editorHoverWidget.background": "#12080a",
+			"editorHoverWidget.border": "#3a151a",
+			"editorGroupHeader.tabsBackground": "#080304",
+			"editorGroup.border": "#2a1014",
+			"editorOverviewRuler.border": "#1a0a0c",
+
+			"sideBar.background": "#080304",
+			"sideBar.foreground": "#d4b8b8",
+			"sideBar.border": "#2a1014",
+			"sideBarTitle.foreground": "#e8d5d5",
+			"sideBarSectionHeader.background": "#12080a",
+			"sideBarSectionHeader.foreground": "#c9a0a0",
+			"sideBarSectionHeader.border": "#2a1014",
+
+			"activityBar.background": "#050203",
+			"activityBar.foreground": "#e85a6a",
+			"activityBar.inactiveForeground": "#6a4045",
+			"activityBar.border": "#2a1014",
+			"activityBarBadge.background": "#8b1a2b",
+			"activityBarBadge.foreground": "#ffffff",
+
+			"statusBar.background": "#4a0e16",
+			"statusBar.foreground": "#e8d5d5",
+			"statusBar.border": "#6b1524",
+			"statusBar.noFolderBackground": "#3a0a10",
+			"statusBar.debuggingBackground": "#6b1524",
+			"statusBar.debuggingForeground": "#ffffff",
+			"statusBarItem.hoverBackground": "#6b1524",
+			"statusBarItem.remoteBackground": "#8b1a2b",
+			"statusBarItem.remoteForeground": "#ffffff",
+
+			"titleBar.activeBackground": "#080304",
+			"titleBar.activeForeground": "#e8d5d5",
+			"titleBar.inactiveBackground": "#050203",
+			"titleBar.inactiveForeground": "#6a4045",
+			"titleBar.border": "#2a1014",
+
+			"tab.activeBackground": "#0a0506",
+			"tab.activeForeground": "#e8d5d5",
+			"tab.activeBorderTop": "#e85a6a",
+			"tab.inactiveBackground": "#080304",
+			"tab.inactiveForeground": "#8a6065",
+			"tab.border": "#1a0a0c",
+			"tab.hoverBackground": "#1a0a0c",
+			"tab.unfocusedActiveBackground": "#0e0608",
+			"tab.unfocusedActiveForeground": "#b89a9a",
+
+			"panel.background": "#080304",
+			"panel.border": "#2a1014",
+			"panelTitle.activeForeground": "#e8d5d5",
+			"panelTitle.activeBorder": "#e85a6a",
+			"panelTitle.inactiveForeground": "#8a6065",
+
+			"terminal.background": "#050203",
+			"terminal.foreground": "#e8d5d5",
+			"terminal.ansiBlack": "#1a0a0c",
+			"terminal.ansiRed": "#e85a6a",
+			"terminal.ansiGreen": "#6aba7a",
+			"terminal.ansiYellow": "#d4a84b",
+			"terminal.ansiBlue": "#7a9ec9",
+			"terminal.ansiMagenta": "#c07098",
+			"terminal.ansiCyan": "#6ab0b0",
+			"terminal.ansiWhite": "#e8d5d5",
+			"terminal.ansiBrightBlack": "#5a3035",
+			"terminal.ansiBrightRed": "#ff7a8a",
+			"terminal.ansiBrightGreen": "#8ad49a",
+			"terminal.ansiBrightYellow": "#e8c86a",
+			"terminal.ansiBrightBlue": "#9ab8e0",
+			"terminal.ansiBrightMagenta": "#e090b0",
+			"terminal.ansiBrightCyan": "#8ad0d0",
+			"terminal.ansiBrightWhite": "#ffffff",
+			"terminalCursor.foreground": "#e85a6a",
+
+			"list.activeSelectionBackground": "#6b1524",
+			"list.activeSelectionForeground": "#ffffff",
+			"list.inactiveSelectionBackground": "#3a1018",
+			"list.inactiveSelectionForeground": "#e8d5d5",
+			"list.hoverBackground": "#1a0a0c",
+			"list.focusBackground": "#6b1524",
+			"list.focusForeground": "#ffffff",
+			"list.highlightForeground": "#e85a6a",
+			"list.errorForeground": "#ff6b6b",
+			"list.warningForeground": "#d4a84b",
+
+			"button.background": "#8b1a2b",
+			"button.foreground": "#ffffff",
+			"button.hoverBackground": "#a82035",
+			"button.secondaryBackground": "#2a1014",
+			"button.secondaryForeground": "#e8d5d5",
+			"button.secondaryHoverBackground": "#3a151a",
+
+			"input.background": "#12080a",
+			"input.foreground": "#e8d5d5",
+			"input.border": "#3a151a",
+			"input.placeholderForeground": "#6a4045",
+			"inputOption.activeBorder": "#e85a6a",
+			"inputOption.activeBackground": "#6b152455",
+			"inputValidation.errorBackground": "#3a0a10",
+			"inputValidation.errorBorder": "#e85a6a",
+			"inputValidation.warningBackground": "#2a2010",
+			"inputValidation.warningBorder": "#d4a84b",
+			"inputValidation.infoBackground": "#0a1a2a",
+			"inputValidation.infoBorder": "#7a9ec9",
+
+			"dropdown.background": "#12080a",
+			"dropdown.foreground": "#e8d5d5",
+			"dropdown.border": "#3a151a",
+			"dropdown.listBackground": "#12080a",
+
+			"badge.background": "#8b1a2b",
+			"badge.foreground": "#ffffff",
+			"progressBar.background": "#e85a6a",
+			"scrollbarSlider.background": "#6b152444",
+			"scrollbarSlider.hoverBackground": "#8b1a2b66",
+			"scrollbarSlider.activeBackground": "#a8203588",
+
+			"peekView.border": "#8b1a2b",
+			"peekViewEditor.background": "#0a0506",
+			"peekViewResult.background": "#080304",
+			"peekViewTitle.background": "#12080a",
+
+			"notificationCenterHeader.background": "#12080a",
+			"notifications.background": "#12080a",
+			"notifications.border": "#3a151a",
+			"notificationLink.foreground": "#e85a6a",
+
+			"gitDecoration.modifiedResourceForeground": "#d4a84b",
+			"gitDecoration.untrackedResourceForeground": "#6aba7a",
+			"gitDecoration.deletedResourceForeground": "#e85a6a",
+			"gitDecoration.conflictingResourceForeground": "#c07098",
+			"gitDecoration.ignoredResourceForeground": "#5a3035",
+
+			"minimap.background": "#080304",
+			"minimap.selectionHighlight": "#6b1524",
+			"minimapFinderMatchHighlight": "#8b1a2b",
+			"minimapGutter.addedBackground": "#3d8b5a",
+			"minimapGutter.modifiedBackground": "#c9a227",
+			"minimapGutter.deletedBackground": "#8b1a2b"
+		},
+		"editor.tokenColorCustomizations": {
+			"comments": "#6a4548",
+			"strings": "#d4a0a8",
+			"keywords": "#e85a6a",
+			"numbers": "#c9a070",
+			"types": "#c07078",
+			"functions": "#e8c0c0",
+			"variables": "#e8d5d5"
+		},
+		"actionButtons": {
+
+			"commands": [
+				{
+					"name": "Build Exe",
+					"color": "green",
+					"tooltip": "Build mousehop release executable for the current platform",
+					"useVsCodeApi": true,
+					"command": "workbench.action.tasks.runTask",
+					"args": ["Build mousehop (current platform)"]
+				},
+				{
+					"name": "Run Exe",
+					"color": "#7FDBFF",
+					"tooltip": "Launch mousehop from its final release path in the background",
+					"useVsCodeApi": true,
+					"command": "workbench.action.tasks.runTask",
+					"args": ["Launch mousehop (current platform)"]
+				},
+			],
+			"defaultColor": "white",
+			"reloadButton": "↻",
+			"loadNpmCommands": false
+		}
+	},
+
+	"tasks": {
+		"version": "2.0.0",
+		"tasks": [
+			{
+				"label": "Build Mousehop.app (release)",
+				"type": "shell",
+				"command": "scripts/build-macos-release.sh",
+				"options": {
+					"cwd": "${workspaceFolder}"
+				},
+				"group": {
+					"kind": "build",
+					"isDefault": true
+				},
+				"problemMatcher": [
+					"$rustc"
+				],
+				"presentation": {
+					"reveal": "always",
+					"panel": "shared",
+					"focus": false
+				},
+				"detail": "Icon → cargo bundle --release → vendor Homebrew dylibs → MousehopDev.app"
+			},
+			{
+				"label": "Build mousehop binary (release)",
+				"type": "shell",
+				"command": "export PATH=\"${CARGO_HOME:-$HOME/.cargo}/bin:$PATH\"; host=$(rustc -vV | awk '/^host:/{print $2}'); case \"$host\" in aarch64-*) p=/opt/homebrew;; x86_64-*) p=/usr/local;; *) echo \"unsupported rustc host: $host\" >&2; exit 1;; esac; export LIBRARY_PATH=\"$p/lib\" PKG_CONFIG_PATH=\"$p/lib/pkgconfig\" PATH=\"${CARGO_HOME:-$HOME/.cargo}/bin:$p/bin:$PATH\"; cargo build -p mousehop --release",
+				"options": {
+					"cwd": "${workspaceFolder}"
+				},
+				"group": "build",
+				"problemMatcher": [
+					"$rustc"
+				],
+				"presentation": {
+					"reveal": "always",
+					"panel": "shared"
+				},
+				"detail": "target/release/mousehop (no .app bundle)"
+			},
+			{
+				"label": "Build mousehop.exe (release)",
+				"type": "shell",
+				"command": "scripts/build-windows-release.ps1",
+				"options": {
+					"cwd": "${workspaceFolder}",
+					"shell": {
+						"executable": "powershell.exe",
+						"args": [
+							"-NoProfile",
+							"-ExecutionPolicy",
+							"Bypass",
+							"-File"
+						]
+					}
+				},
+				"group": "build",
+				"problemMatcher": [
+					"$rustc"
+				],
+				"presentation": {
+					"reveal": "always",
+					"panel": "shared",
+					"focus": false
+				},
+				"detail": "README Windows §3–4: GTK env + pkgconf check → cargo build -p mousehop --release → stage exe+DLLs under target/release/mousehop-windows/"
+			},
+			{
+				"label": "Build mousehop (current platform)",
+				"type": "shell",
+				"command": "cargo build -p mousehop --release",
+				"windows": {
+					"command": "scripts/build-windows-release.ps1",
+					"options": {
+						"cwd": "${workspaceFolder}",
+						"shell": {
+							"executable": "powershell.exe",
+							"args": [
+								"-NoProfile",
+								"-ExecutionPolicy",
+								"Bypass",
+								"-File"
+							]
+						}
+					}
+				},
+				"osx": {
+					"command": "scripts/build-macos-release.sh",
+					"options": {
+						"cwd": "${workspaceFolder}"
+					}
+				},
+				"options": {
+					"cwd": "${workspaceFolder}"
+				},
+				"group": "build",
+				"problemMatcher": [
+					"$rustc"
+				],
+				"presentation": {
+					"reveal": "always",
+					"panel": "shared",
+					"focus": false
+				},
+				"detail": "Host OS release: Windows exe staging, macOS .app, else cargo build -p mousehop --release"
+			},
+			{
+				"label": "Launch mousehop (current platform)",
+				"type": "shell",
+				"command": "test -x target/release/mousehop && (nohup target/release/mousehop >/dev/null 2>&1 &)",
+				"windows": {
+					"command": "Start-Process -FilePath '${workspaceFolder}\\target\\release\\mousehop-windows\\mousehop.exe' -WorkingDirectory '${workspaceFolder}\\target\\release\\mousehop-windows'",
+					"options": {
+						"cwd": "${workspaceFolder}",
+						"shell": {
+							"executable": "powershell.exe",
+							"args": [
+								"-NoProfile",
+								"-Command"
+							]
+						}
+					}
+				},
+				"osx": {
+					"command": "open \"${workspaceFolder}/MousehopDev.app\"",
+					"options": {
+						"cwd": "${workspaceFolder}"
+					}
+				},
+				"options": {
+					"cwd": "${workspaceFolder}"
+				},
+				"problemMatcher": [],
+				"presentation": {
+					"reveal": "silent",
+					"panel": "shared",
+					"focus": false,
+					"close": true
+				},
+				"detail": "Background launch from final path: Windows mousehop-windows\\mousehop.exe, macOS MousehopDev.app, else target/release/mousehop"
+			},
+			{
+				"label": "Build mousehop (debug)",
+				"type": "shell",
+				"command": "cargo build -p mousehop",
+				"windows": {
+					"command": "$ErrorActionPreference='Stop'; $cargoBin = if ($env:CARGO_HOME) { Join-Path $env:CARGO_HOME 'bin' } else { Join-Path $env:USERPROFILE '.cargo\\bin' }; $gtkRoot = if ($env:MOUSEHOP_GTK_ROOT) { $env:MOUSEHOP_GTK_ROOT } else { 'C:\\gtk-build\\gtk\\x64\\release' }; $gtkBin = Join-Path $gtkRoot 'bin'; $gtkLib = Join-Path $gtkRoot 'lib'; $env:Path = ($cargoBin + ';' + $gtkBin + ';' + $env:Path); $env:PKG_CONFIG = (Join-Path $gtkBin 'pkgconf.exe'); $env:PKG_CONFIG_PATH = (Join-Path $gtkLib 'pkgconfig'); if ($env:Lib) { $env:Lib = ($gtkLib + ';' + $env:Lib) } else { $env:Lib = $gtkLib }; Get-Process -Name mousehop -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue; Start-Sleep -Milliseconds 300; & (Join-Path $cargoBin 'cargo.exe') build -p mousehop",
+					"options": {
+						"cwd": "${workspaceFolder}",
+						"shell": {
+							"executable": "powershell.exe",
+							"args": [
+								"-NoProfile",
+								"-Command"
+							]
+						}
+					}
+				},
+				"osx": {
+					"command": "host=$(rustc -vV | awk '/^host:/{print $2}'); case \"$host\" in aarch64-*) p=/opt/homebrew;; x86_64-*) p=/usr/local;; *) echo \"unsupported rustc host: $host\" >&2; exit 1;; esac; export LIBRARY_PATH=\"$p/lib\" PKG_CONFIG_PATH=\"$p/lib/pkgconfig\" PATH=\"${CARGO_HOME:-$HOME/.cargo}/bin:$p/bin:$PATH\"; cargo build -p mousehop",
+					"options": {
+						"cwd": "${workspaceFolder}"
+					}
+				},
+				"options": {
+					"cwd": "${workspaceFolder}"
+				},
+				"group": "build",
+				"problemMatcher": [
+					"$rustc"
+				],
+				"presentation": {
+					"reveal": "silent",
+					"panel": "shared",
+					"focus": false
+				},
+				"detail": "Debug build for F5 launch (Windows: GTK env + stop running mousehop.exe first)"
+			}
+		]
+	},
+
+	"launch": {
+		"version": "0.2.0",
+		"configurations": [
+			{
+				"name": "Debug mousehop (Windows MSVC)",
+				"type": "cppvsdbg",
+				"request": "launch",
+				"program": "${workspaceFolder}/target/debug/mousehop.exe",
+				"cwd": "${workspaceFolder}",
+				"preLaunchTask": "Build mousehop (debug)",
+				"env": {
+					"RUST_LOG": "mousehop=debug",
+					"Path": "C:\\gtk-build\\gtk\\x64\\release\\bin;${env:Path}",
+					"PKG_CONFIG": "C:\\gtk-build\\gtk\\x64\\release\\bin\\pkgconf.exe",
+					"PKG_CONFIG_PATH": "C:\\gtk-build\\gtk\\x64\\release\\lib\\pkgconfig"
+				},
+				"console": "integratedTerminal",
+				"windows": {
+					"program": "${workspaceFolder}/target/debug/mousehop.exe"
+				}
+			}
+		]
 	}
 }

@@ -2,9 +2,8 @@ use futures::{Stream, StreamExt};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use mousehop_ipc::IncomingPeerConfig;
 use mousehop_proto::{
-    MAX_CLIPBOARD_SIZE, MAX_EVENT_SIZE, PROTOCOL_MAGIC, ProtoEvent, decode_clipboard_event,
-    decode_display_layout_event, decode_fixed_event, encode_clipboard_event,
-    encode_display_layout_event,
+    MAX_CLIPBOARD_SIZE, MAX_EVENT_SIZE, PROTOCOL_MAGIC, ProtoEvent, decode_proto_datagram,
+    encode_variable_event,
 };
 use rustls::pki_types::CertificateDer;
 use std::{
@@ -315,14 +314,8 @@ impl MousehopListener {
         event: ProtoEvent,
     ) {
         log::trace!("reply {event} >=>=>=>=>=> {addr} session {session}");
-        let bytes_owned = match &event {
-            ProtoEvent::Clipboard { .. } => encode_clipboard_event(&event),
-            ProtoEvent::DisplayLayout { .. } => encode_display_layout_event(&event),
-            _ => Ok(Vec::new()),
-        };
-        let bytes_owned = match bytes_owned {
-            Ok(bytes) if !bytes.is_empty() => Some(bytes),
-            Ok(_) => None,
+        let bytes_owned = match encode_variable_event(&event) {
+            Ok(bytes) => bytes,
             Err(e) => {
                 log::warn!("dropping invalid reply to {addr}: {e}");
                 return;
@@ -927,15 +920,7 @@ async fn hello_watchdog(addr: SocketAddr, conn: ArcConn, hello_ok: Rc<Cell<bool>
 /// Mirrors `decode_proto_datagram` on the connect side so both directions
 /// accept the same wire formats.
 fn decode_listen_datagram(bytes: &[u8]) -> Option<ProtoEvent> {
-    use mousehop_proto::EventType;
-    let tag = *bytes.first()?;
-    if tag == EventType::Clipboard as u8 {
-        return decode_clipboard_event(bytes).ok();
-    }
-    if tag == EventType::DisplayLayout as u8 {
-        return decode_display_layout_event(bytes).ok();
-    }
-    decode_fixed_event(bytes).ok()
+    decode_proto_datagram(bytes)
 }
 
 #[cfg(test)]

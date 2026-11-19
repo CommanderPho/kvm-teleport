@@ -6,17 +6,21 @@ use std::{
 };
 
 use futures::StreamExt;
+use input_capture::spatial::ArmedRoute;
 use input_capture::{
     CaptureError, CaptureEvent, CaptureHandle, HostInputState, InputCapture, InputCaptureError,
     Position,
 };
+use input_event::display::DisplayEdge;
+use input_event::workspace::{OutboundDir, RoutingSnapshot};
 use input_event::{Event, KeyboardEvent, PointerEvent, scancode};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use mousehop_ipc::CrossingModifier;
 use mousehop_proto::{
-    CAP_ATOMIC_HANDOVER, CAP_TRANSACTIONAL_HANDOVER, HandoverWarpStatus,
+    CAP_ATOMIC_HANDOVER, CAP_SHARED_WORKSPACE, CAP_TRANSACTIONAL_HANDOVER, HandoverWarpStatus,
     HostInputState as ProtoHostInputState, LEAVE_HANDOVER, LEAVE_RELEASE_ONLY, ProtoEvent,
 };
+use std::sync::Arc;
 use tokio::sync::oneshot;
 use tokio::task::{JoinHandle, spawn_local};
 use tokio_util::sync::CancellationToken;
@@ -63,6 +67,24 @@ pub(crate) enum ICaptureEvent {
     /// fires later but reliably, so it carries the broadcast as a
     /// belt-and-suspenders fallback.
     PeerCommitUpdated(CaptureHandle),
+    /// Outbound peer Hello capabilities (for shared-workspace gating).
+    PeerCapabilities {
+        handle: CaptureHandle,
+        capabilities: u32,
+    },
+    /// Outbound peer identified topology.
+    PeerTopology {
+        handle: CaptureHandle,
+        topology: input_event::workspace::LocalTopology,
+    },
+    /// Authority workspace chunk on the outbound path.
+    WorkspaceChunk {
+        handle: CaptureHandle,
+        revision: u64,
+        index: u8,
+        count: u8,
+        data: Vec<u8>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,6 +126,12 @@ enum CaptureRequest {
     SetCommandAsCtrl(CaptureHandle, bool),
     /// Update the optional modifier gate for a client's next crossing.
     SetCrossingModifier(CaptureHandle, Option<CrossingModifier>),
+    /// Replace the immutable spatial routing snapshot used on Begin.
+    SetSpatialRouting {
+        local_fingerprint: String,
+        peer_fingerprints: HashMap<CaptureHandle, String>,
+        snapshot: Option<Arc<RoutingSnapshot>>,
+    },
 }
 
 impl Capture {
@@ -141,6 +169,9 @@ impl Capture {
             next_handover_serial: 0,
             peer_capabilities: Default::default(),
             peer_pressed_keys: Default::default(),
+            local_fingerprint: String::new(),
+            peer_fingerprints: Default::default(),
+            spatial_snapshot: None,
             #[cfg(target_os = "macos")]
             user_activity: Default::default(),
         };
@@ -227,6 +258,19 @@ impl Capture {
         let _ = self
             .request_tx
             .send(CaptureRequest::SetCrossingModifier(handle, modifier));
+    }
+
+    pub(crate) fn set_spatial_routing(
+        &self,
+        local_fingerprint: String,
+        peer_fingerprints: HashMap<CaptureHandle, String>,
+        snapshot: Option<Arc<RoutingSnapshot>>,
+    ) {
+        let _ = self.request_tx.send(CaptureRequest::SetSpatialRouting {
+            local_fingerprint,
+            peer_fingerprints,
+            snapshot,
+        });
     }
 }
 
@@ -614,6 +658,12 @@ struct CaptureTask {
     /// Local capture state can run ahead of the wire during the Ack gate or a
     /// failed send, so release cleanup must use this wire-visible set.
     peer_pressed_keys: HashSet<scancode::Linux>,
+    /// Local TLS fingerprint for workspace routing lookups.
+    local_fingerprint: String,
+    /// Capture handle → authenticated peer fingerprint (when known).
+    peer_fingerprints: HashMap<CaptureHandle, String>,
+    /// Active immutable routing snapshot; hot path only reads this Arc.
+    spatial_snapshot: Option<Arc<RoutingSnapshot>>,
     #[cfg(target_os = "macos")]
     user_activity: crate::macos_power::UserActivity,
 }
@@ -634,6 +684,23 @@ struct PendingHandover {
 struct PendingCross {
     handle: CaptureHandle,
     begin: CaptureEvent,
+    /// Snapshot Key / Modifiers events observed while waiting for a
+    /// conclusive gate decision. Replayed on Accept so the peer receives
+    /// held-modifier downs that arrived before the accepting event.
+    buffered: Vec<CaptureEvent>,
+}
+
+/// Events to forward once the crossing gate accepts, in wire order.
+fn pending_cross_replay(
+    pending: PendingCross,
+    accepting: CaptureEvent,
+) -> Vec<(CaptureHandle, CaptureEvent)> {
+    let handle = pending.handle;
+    let mut events = Vec::with_capacity(pending.buffered.len() + 2);
+    events.push((handle, pending.begin));
+    events.extend(pending.buffered.into_iter().map(|event| (handle, event)));
+    events.push((handle, accepting));
+    events
 }
 
 impl PendingHandover {
@@ -792,6 +859,48 @@ impl CaptureTask {
             .iter()
             .any(|key| capture.keys_pressed(&[*key]))
             || event_has_crossing_modifier(event, modifier)
+    }
+
+    async fn arm_spatial_routes(
+        &self,
+        capture: &mut InputCapture,
+    ) -> Result<(), InputCaptureError> {
+        let routes = match self.spatial_snapshot.as_ref() {
+            Some(snapshot) => armed_routes_from_snapshot(snapshot, &self.local_fingerprint),
+            None => Vec::new(),
+        };
+        capture.set_spatial_routes(routes);
+        Ok(())
+    }
+
+    fn spatial_enter_for_begin(
+        &self,
+        handle: CaptureHandle,
+        cursor: Option<(i32, i32)>,
+        outbound: Option<OutboundDir>,
+    ) -> Option<input_event::workspace::Landing> {
+        let snapshot = self.spatial_snapshot.as_ref()?;
+        let peer_fp = self.peer_fingerprints.get(&handle)?;
+        let cursor = cursor?;
+        let dir = outbound.or_else(|| {
+            // Infer from configured Position when backend omitted outbound.
+            match self.try_get_pos(handle)? {
+                Position::Left => Some(OutboundDir::Left),
+                Position::Right => Some(OutboundDir::Right),
+                Position::Top => Some(OutboundDir::Up),
+                Position::Bottom => Some(OutboundDir::Down),
+            }
+        })?;
+        // Cursor is already in local device coordinates; convert via placement.
+        let display = snapshot.display_at_local(&self.local_fingerprint, cursor)?;
+        let workspace_point =
+            snapshot.local_to_workspace(&self.local_fingerprint, display, cursor)?;
+        let landing = snapshot.lookup(&self.local_fingerprint, workspace_point, dir)?;
+        if landing.dst_peer != *peer_fp {
+            // Position barrier fired for a different peer than the spatial route.
+            return None;
+        }
+        Some(landing)
     }
 
     fn scoped_input(&self, event: Event) -> ProtoEvent {
@@ -966,6 +1075,15 @@ impl CaptureTask {
                         CaptureRequest::SetCommandAsCtrl(handle, enabled) => {
                             self.set_command_as_ctrl(handle, enabled);
                         }
+                        CaptureRequest::SetSpatialRouting {
+                            local_fingerprint,
+                            peer_fingerprints,
+                            snapshot,
+                        } => {
+                            self.local_fingerprint = local_fingerprint;
+                            self.peer_fingerprints = peer_fingerprints;
+                            self.spatial_snapshot = snapshot;
+                        }
                         CaptureRequest::SetCrossingModifier(handle, modifier) => {
                             self.set_crossing_modifier(handle, modifier);
                         }
@@ -1132,6 +1250,9 @@ impl CaptureTask {
                                     | ProtoEvent::HostInputStateAck { .. }
                                     | ProtoEvent::HandoverLeave { .. }
                                     | ProtoEvent::HandoverLeaveAck { .. }
+                                    | ProtoEvent::IdentifiedTopology { .. }
+                                    | ProtoEvent::WorkspaceChunk { .. }
+                                    | ProtoEvent::WorkspaceAck { .. }
                             )
                         {
                             // Capture events belong to the active client, but
@@ -1365,7 +1486,39 @@ impl CaptureTask {
                             self.event_tx
                                 .send(ICaptureEvent::PeerCommitUpdated(handle))
                                 .expect("channel closed");
+                            self.event_tx
+                                .send(ICaptureEvent::PeerCapabilities {
+                                    handle,
+                                    capabilities,
+                                })
+                                .expect("channel closed");
                             let _ = self.retry_lock_recovery_for(handle).await;
+                        }
+                        ProtoEvent::IdentifiedTopology { topology, .. } => {
+                            self.event_tx
+                                .send(ICaptureEvent::PeerTopology { handle, topology })
+                                .expect("channel closed");
+                        }
+                        ProtoEvent::WorkspaceChunk {
+                            revision,
+                            index,
+                            count,
+                            data,
+                        } => {
+                            self.event_tx
+                                .send(ICaptureEvent::WorkspaceChunk {
+                                    handle,
+                                    revision,
+                                    index,
+                                    count,
+                                    data,
+                                })
+                                .expect("channel closed");
+                        }
+                        ProtoEvent::WorkspaceAck { revision } => {
+                            log::debug!(
+                                "workspace ack revision {revision} from client {handle} session {session}"
+                            );
                         }
                         _ => {}
                     }
@@ -1450,6 +1603,16 @@ impl CaptureTask {
                                 .await?;
                         }
                     }
+                    CaptureRequest::SetSpatialRouting {
+                        local_fingerprint,
+                        peer_fingerprints,
+                        snapshot,
+                    } => {
+                        self.local_fingerprint = local_fingerprint;
+                        self.peer_fingerprints = peer_fingerprints;
+                        self.spatial_snapshot = snapshot;
+                        self.arm_spatial_routes(capture).await?;
+                    }
                 },
                 _ = self.cancellation_token.cancelled() => break,
             }
@@ -1491,9 +1654,11 @@ impl CaptureTask {
             match crossing_gate_decision(required, modifier_held, capture_event) {
                 CrossingGateDecision::Accept => {
                     log::debug!("crossing modifier accepted for client {}", pending.handle);
-                    self.handle_accepted_capture_event(capture, (pending.handle, pending.begin))
-                        .await?;
-                    return self.handle_accepted_capture_event(capture, event).await;
+                    for replayed in pending_cross_replay(pending, capture_event.clone()) {
+                        self.handle_accepted_capture_event(capture, replayed)
+                            .await?;
+                    }
+                    return Ok(());
                 }
                 CrossingGateDecision::Reject => {
                     log::info!(
@@ -1509,7 +1674,10 @@ impl CaptureTask {
 
             // Held-key snapshots are a short sequence of Key events followed
             // by one aggregate Modifiers event. Keep waiting so a non-required
-            // modifier sent first cannot incorrectly reject a later match.
+            // modifier sent first cannot incorrectly reject a later match —
+            // and buffer those keys so Accept can still forward them.
+            let mut pending = pending;
+            pending.buffered.push(capture_event.clone());
             self.pending_cross = Some(pending);
             return Ok(());
         }
@@ -1523,6 +1691,7 @@ impl CaptureTask {
                     self.pending_cross = Some(PendingCross {
                         handle: *handle,
                         begin: capture_event.clone(),
+                        buffered: Vec::new(),
                     });
                     return Ok(());
                 }
@@ -1695,19 +1864,40 @@ impl CaptureTask {
         }
 
         let (proto_event, mapper_before_send) = match &event {
-            CaptureEvent::Begin { .. } => {
+            CaptureEvent::Begin {
+                outbound, cursor, ..
+            } => {
                 let session = self
                     .active_session
                     .expect("Begin session was checked before capture activation");
-                let supports_atomic = self
+                let caps = self
                     .peer_capabilities
                     .get(&(handle, session))
-                    .is_some_and(|capabilities| capabilities & CAP_ATOMIC_HANDOVER != 0);
-                let supports_transactional = self
-                    .peer_capabilities
-                    .get(&(handle, session))
-                    .is_some_and(|capabilities| capabilities & CAP_TRANSACTIONAL_HANDOVER != 0);
-                let (serial, enter, legacy_cursor) = if supports_atomic {
+                    .copied()
+                    .unwrap_or(0);
+                let supports_atomic = caps & CAP_ATOMIC_HANDOVER != 0;
+                let supports_transactional = caps & CAP_TRANSACTIONAL_HANDOVER != 0;
+                let supports_spatial = caps & CAP_SHARED_WORKSPACE != 0;
+                let spatial_enter = if supports_spatial && supports_atomic {
+                    self.spatial_enter_for_begin(handle, *cursor, *outbound)
+                } else {
+                    None
+                };
+                let (serial, enter, legacy_cursor) = if let Some(spatial) = spatial_enter {
+                    let serial = self.allocate_handover_serial();
+                    (
+                        serial,
+                        ProtoEvent::HandoverEnterSpatial {
+                            serial,
+                            workspace_rev: spatial.workspace_revision,
+                            topology_gen: spatial.dst_topology_generation,
+                            dest_display_id: spatial.dst_display.as_str().to_string(),
+                            local_x: spatial.local_position.0,
+                            local_y: spatial.local_position.1,
+                        },
+                        None,
+                    )
+                } else if supports_atomic {
                     let serial = self.allocate_handover_serial();
                     let cross_fraction = cursor_pos.map(|(pos, nx, ny)| match pos {
                         mousehop_proto::Position::Left | mousehop_proto::Position::Right => ny,
@@ -2112,6 +2302,45 @@ fn completes_lock_recovery(
         && ack_generation == host_input_generation
 }
 
+fn armed_routes_from_snapshot(
+    snapshot: &RoutingSnapshot,
+    local_fingerprint: &str,
+) -> Vec<ArmedRoute> {
+    snapshot
+        .routes_from(local_fingerprint)
+        .filter_map(|route| {
+            let position = match route.src_edge {
+                DisplayEdge::Left => Position::Left,
+                DisplayEdge::Right => Position::Right,
+                DisplayEdge::Top => Position::Top,
+                DisplayEdge::Bottom => Position::Bottom,
+            };
+            let rect = snapshot.workspace_rect(local_fingerprint, &route.src_display)?;
+            let (ox, oy) =
+                snapshot.local_to_workspace(local_fingerprint, &route.src_display, (0, 0))?;
+            let (start, end) = match route.src_edge {
+                DisplayEdge::Left | DisplayEdge::Right => {
+                    (route.src_start - oy, route.src_end - oy)
+                }
+                DisplayEdge::Top | DisplayEdge::Bottom => {
+                    (route.src_start - ox, route.src_end - ox)
+                }
+            };
+            let coordinate = match route.src_edge {
+                DisplayEdge::Left | DisplayEdge::Right => rect.edge_coordinate(route.src_edge) - ox,
+                DisplayEdge::Top | DisplayEdge::Bottom => rect.edge_coordinate(route.src_edge) - oy,
+            };
+            Some(ArmedRoute {
+                edge: route.src_edge,
+                start,
+                end,
+                coordinate,
+                position,
+            })
+        })
+        .collect()
+}
+
 fn to_capture_pos(pos: mousehop_ipc::Position) -> input_capture::Position {
     match pos {
         mousehop_ipc::Position::Left => input_capture::Position::Left,
@@ -2192,6 +2421,9 @@ mod command_ctrl_tests {
             next_handover_serial: 0,
             peer_capabilities: Default::default(),
             peer_pressed_keys: Default::default(),
+            local_fingerprint: String::new(),
+            peer_fingerprints: Default::default(),
+            spatial_snapshot: None,
             #[cfg(target_os = "macos")]
             user_activity: Default::default(),
         }
@@ -2439,6 +2671,66 @@ mod command_ctrl_tests {
             crossing_gate_decision(None, false, &key),
             CrossingGateDecision::Accept
         );
+    }
+
+    #[test]
+    fn pending_cross_replays_buffered_keys_when_modifiers_accept() {
+        let begin = CaptureEvent::Begin {
+            cursor: None,
+            normalized_cursor: None,
+            outbound: None,
+        };
+        let shift_down = CaptureEvent::Input(key(KeyLeftShift, 1));
+        let ctrl_down = CaptureEvent::Input(key(KeyLeftCtrl, 1));
+        let mods = CaptureEvent::Input(modifiers(CONTROL_MASK | SHIFT_MASK));
+
+        assert_eq!(
+            crossing_gate_decision(Some(CrossingModifier::Control), false, &shift_down),
+            CrossingGateDecision::WaitForSnapshot
+        );
+
+        let mut pending = PendingCross {
+            handle: 7,
+            begin: begin.clone(),
+            buffered: Vec::new(),
+        };
+        pending.buffered.push(shift_down.clone());
+        pending.buffered.push(ctrl_down.clone());
+
+        assert_eq!(
+            crossing_gate_decision(Some(CrossingModifier::Control), true, &mods),
+            CrossingGateDecision::Accept
+        );
+
+        let replay = pending_cross_replay(pending, mods.clone());
+        assert_eq!(
+            replay,
+            vec![(7, begin), (7, shift_down), (7, ctrl_down), (7, mods),]
+        );
+    }
+
+    #[test]
+    fn pending_cross_reject_discards_buffer_without_replay() {
+        let begin = CaptureEvent::Begin {
+            cursor: None,
+            normalized_cursor: None,
+            outbound: None,
+        };
+        let shift_down = CaptureEvent::Input(key(KeyLeftShift, 1));
+        let mods = CaptureEvent::Input(modifiers(SHIFT_MASK));
+
+        let mut pending = PendingCross {
+            handle: 3,
+            begin,
+            buffered: vec![shift_down],
+        };
+        assert_eq!(
+            crossing_gate_decision(Some(CrossingModifier::Control), false, &mods),
+            CrossingGateDecision::Reject
+        );
+        // Reject path drops `pending` without calling pending_cross_replay.
+        pending.buffered.clear();
+        assert!(pending.buffered.is_empty());
     }
 
     #[test]

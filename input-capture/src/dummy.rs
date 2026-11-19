@@ -74,6 +74,7 @@ impl Stream for DummyInputCapture {
                 CaptureEvent::Begin {
                     cursor: None,
                     normalized_cursor: None,
+                    outbound: None,
                 }
             }
             Some(start) => {

@@ -135,10 +135,36 @@ jobs:
       run: cargo build --release
     - name: Create Archive
       run: |
-        mkdir "mousehop-windows"
-        Get-Childitem -Path "C:\\gtk-build\\gtk\\x64\\release\\bin\\*.dll" -File -Recurse | Copy-Item -Destination "mousehop-windows"
-        Copy-Item -Path "target\release\mousehop.exe" -Destination "mousehop-windows"
-        Compress-Archive -Path "mousehop-windows\*" -DestinationPath mousehop-windows-x86_64.zip
+        $gtkRoot = "C:\gtk-build\gtk\x64\release"
+        $stage = "mousehop-windows"
+        $loaderSrc = Join-Path $gtkRoot "lib\gdk-pixbuf-2.0\2.10.0\loaders\pixbufloader_svg.dll"
+        if (-not (Test-Path $loaderSrc)) {
+          throw "Missing SVG pixbuf loader at $loaderSrc (build librsvg with gvsbuild)."
+        }
+        mkdir $stage | Out-Null
+        Get-ChildItem -Path (Join-Path $gtkRoot "bin\*.dll") -File -Recurse | Copy-Item -Destination $stage
+        Copy-Item -Path "target\release\mousehop.exe" -Destination $stage
+        $loaderDir = Join-Path $stage "lib\gdk-pixbuf-2.0\2.10.0\loaders"
+        New-Item -ItemType Directory -Path $loaderDir -Force | Out-Null
+        Copy-Item -Path $loaderSrc -Destination $loaderDir
+        Copy-Item -Path $loaderSrc -Destination $stage
+        $loaderAbs = [System.IO.Path]::GetFullPath((Join-Path $loaderDir "pixbufloader_svg.dll"))
+        # Match gdk-pixbuf-query-loaders: absolute paths with forward slashes.
+        $loaderCacheEntry = $loaderAbs.Replace('\', '/')
+        $cache = @(
+          '# GdkPixbuf Image Loader Modules file',
+          '# Generated for the Mousehop Windows release archive.',
+          '#',
+          "`"$loaderCacheEntry`"",
+          '"svg" 6 "gdk-pixbuf" "Scalable Vector Graphics" "LGPL"',
+          '"image/svg+xml" "image/svg" "image/svg-xml" "image/vnd.adobe.svg+xml" "text/xml-svg" "image/svg+xml-compressed" ""',
+          '"svg" "svgz" "svg.gz" ""',
+          '" <svg" "*    " 100',
+          '" <!DOCTYPE svg" "*             " 100',
+          ''
+        ) -join "`n"
+        Set-Content -Path (Join-Path $stage "lib\gdk-pixbuf-2.0\2.10.0\loaders.cache") -Value $cache -Encoding ascii -NoNewline
+        Compress-Archive -Path "$stage\*" -DestinationPath mousehop-windows-x86_64.zip
     - name: Attach archive to the release
       env:
         GH_TOKEN: ${{ github.token }}

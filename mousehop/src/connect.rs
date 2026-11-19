@@ -5,9 +5,8 @@ use input_event::{Event as InputEvent, KeyboardEvent};
 use local_channel::mpsc::{Receiver, Sender, channel};
 use mousehop_ipc::{ClientHandle, ConnectionMode, DEFAULT_PORT};
 use mousehop_proto::{
-    MAX_CLIPBOARD_SIZE, MAX_EVENT_SIZE, PROTOCOL_MAGIC, ProtoEvent, decode_clipboard_event,
-    decode_display_layout_event, decode_fixed_event, encode_clipboard_event,
-    encode_display_layout_event,
+    MAX_CLIPBOARD_SIZE, MAX_EVENT_SIZE, PROTOCOL_MAGIC, ProtoEvent, decode_proto_datagram,
+    encode_variable_event,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -407,6 +406,22 @@ impl MousehopConnection {
         }
     }
 
+    /// Peer TLS certificate fingerprint for the active outbound session, if any.
+    pub(crate) async fn peer_fingerprint(&self, handle: ClientHandle) -> Option<String> {
+        let addr = self.client_manager.active_addr(handle)?;
+        let slot = {
+            let conns = self.conns.lock().await;
+            conns.get(&addr).cloned()
+        }?;
+        if slot.handle != handle || !self.sessions.is_current(handle, slot.session) {
+            return None;
+        }
+        let conn: &DTLSConn = slot.conn.as_any().downcast_ref()?;
+        let certs = conn.connection_state().await.peer_certificates;
+        let cert = certs.first()?;
+        Some(crate::crypto::generate_fingerprint(cert))
+    }
+
     pub(crate) async fn send(
         &self,
         event: ProtoEvent,
@@ -422,22 +437,12 @@ impl MousehopConnection {
         // Clipboard and display-topology frames are variable-length and can't
         // ride the fixed-size codec; route them through dedicated helpers. For
         // all other events the existing 21-byte path is faster.
-        let bytes_owned: Option<Vec<u8>> = match &event {
-            ProtoEvent::Clipboard { .. } => match encode_clipboard_event(&event) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    log::warn!("dropping oversize clipboard event for client {handle}: {e}");
-                    return Ok(());
-                }
-            },
-            ProtoEvent::DisplayLayout { .. } => match encode_display_layout_event(&event) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    log::warn!("dropping invalid display layout for client {handle}: {e}");
-                    return Ok(());
-                }
-            },
-            _ => None,
+        let bytes_owned = match encode_variable_event(&event) {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("dropping invalid variable event for client {handle}: {e}");
+                return Ok(());
+            }
         };
         let bytes_fixed: ([u8; MAX_EVENT_SIZE], usize) = if bytes_owned.is_some() {
             ([0u8; MAX_EVENT_SIZE], 0)
@@ -522,6 +527,50 @@ impl MousehopConnection {
         Err(MousehopConnectionError::NotConnected)
     }
 
+    /// Eagerly start (or reuse) the outgoing DTLS dial for `handle`
+    /// without sending any input events. The ordinary dial is lazy —
+    /// [`Self::send`] only spawns it when the first event (an `Enter`
+    /// on a screen-edge crossing) needs a transport — so a frontend
+    /// that wants the peer's fingerprint before any crossing (Setup
+    /// Layout) must ask for the connection explicitly. Returns `true`
+    /// when a dial is in flight or already established, `false` when
+    /// the retry gate is still cooling down after a failed attempt.
+    pub(crate) async fn connect_handle(&self, handle: ClientHandle) -> bool {
+        if self.client_manager.active_addr(handle).is_some() {
+            log::debug!("client {handle}: connect requested, transport already established");
+            return true;
+        }
+        let mut connecting = self.connecting.lock().await;
+        if connecting.contains_key(&handle) {
+            log::debug!("client {handle}: connect requested, dial already in flight");
+            return true;
+        }
+        if !self.should_attempt(handle) {
+            log::debug!("client {handle}: connect requested but retry gate is cooling down");
+            return false;
+        }
+        self.client_manager.set_active_addr(handle, None);
+        self.client_manager.set_alive(handle, false);
+        let session = self.sessions.allocate(handle);
+        connecting.insert(handle, session);
+        log::info!("client {handle}: eager connect requested (no input sent)");
+        spawn_local(connect_to_handle(
+            self.client_manager.clone(),
+            self.cert.clone(),
+            handle,
+            session,
+            self.conns.clone(),
+            self.sessions.clone(),
+            self.connecting.clone(),
+            self.recv_tx.clone(),
+            self.ping_response.clone(),
+            self.ping_sent_at.clone(),
+            self.primary_hints.clone(),
+            self.retry_state.clone(),
+        ));
+        true
+    }
+
     /// Send only on the exact already-established DTLS session. Unlike
     /// [`Self::send`], this never starts a connection and never falls through
     /// to a replacement session. It is used for atomic handover retries,
@@ -536,22 +585,12 @@ impl MousehopConnection {
         let event_display = format!("{event}");
         let send_when_emulation_inactive = matches!(&event, ProtoEvent::HostInputState { .. });
         let session_cleanup = is_session_cleanup_event(&event);
-        let bytes_owned: Option<Vec<u8>> = match &event {
-            ProtoEvent::Clipboard { .. } => match encode_clipboard_event(&event) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    log::warn!("dropping oversize clipboard event for client {handle}: {e}");
-                    return Ok(());
-                }
-            },
-            ProtoEvent::DisplayLayout { .. } => match encode_display_layout_event(&event) {
-                Ok(v) => Some(v),
-                Err(e) => {
-                    log::warn!("dropping invalid display layout for client {handle}: {e}");
-                    return Ok(());
-                }
-            },
-            _ => None,
+        let bytes_owned = match encode_variable_event(&event) {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("dropping invalid variable event for client {handle}: {e}");
+                return Ok(());
+            }
         };
         let bytes_fixed: ([u8; MAX_EVENT_SIZE], usize) = if bytes_owned.is_some() {
             ([0u8; MAX_EVENT_SIZE], 0)
@@ -674,7 +713,16 @@ impl MousehopConnection {
                 s.backoff = INITIAL_RETRY_BACKOFF;
                 true
             }
-            Some(s) => Instant::now() >= s.next_attempt_at,
+            Some(s) => {
+                let ready = Instant::now() >= s.next_attempt_at;
+                if !ready {
+                    log::debug!(
+                        "client {handle}: dial suppressed by retry gate for another {:?}",
+                        s.next_attempt_at.saturating_duration_since(Instant::now())
+                    );
+                }
+                ready
+            }
         }
     }
 }
@@ -765,6 +813,11 @@ async fn connect_to_handle(
             // DTLS work or spamming logs on every subsequent mouse
             // event — `should_attempt` will keep gating until either
             // the backoff elapses or new info arrives.
+            log::warn!(
+                "client {handle}: no usable addresses to dial (hostname {:?}, port {port}); \
+                 waiting for DNS/mDNS resolution or a fixed IP",
+                client_manager.get_hostname(handle)
+            );
             record_retry_failure(&retry_state, handle, &ips_set, primary_ip);
             finish_failed_dial(&connecting, &sessions, handle, session).await;
             return Err(MousehopConnectionError::NotConnected);
@@ -773,6 +826,7 @@ async fn connect_to_handle(
         let (conn, addr) = match res {
             Ok(c) => c,
             Err(e) => {
+                log::warn!("client {handle}: all connect attempts failed: {e}");
                 record_retry_failure(&retry_state, handle, &ips_set, primary_ip);
                 finish_failed_dial(&connecting, &sessions, handle, session).await;
                 return Err(e);
@@ -869,6 +923,7 @@ async fn connect_to_handle(
         ));
         return Ok(());
     }
+    log::warn!("client {handle}: no client state (removed before dial); aborting connect");
     finish_failed_dial(&connecting, &sessions, handle, session).await;
     Err(MousehopConnectionError::NotConnected)
 }
@@ -1088,6 +1143,11 @@ async fn receive_loop(
                     break;
                 }
                 hello_ok.set(true);
+                log::info!(
+                    "client {handle}: mousehop handshake complete with {addr} \
+                     (commit {}, capabilities {capabilities:#x})",
+                    String::from_utf8_lossy(&commit)
+                );
                 client_manager.set_peer_commit(handle, Some(commit));
                 // Forward to capture.rs so Service can
                 // broadcast — without this the GUI's
@@ -1136,18 +1196,6 @@ async fn receive_loop(
 /// Classify the first byte of a DTLS datagram and dispatch through
 /// a variable-length codec or the fixed-buffer `try_into` path. Returns
 /// `None` on any decode failure (bad tag, truncated payload, oversize frame).
-fn decode_proto_datagram(bytes: &[u8]) -> Option<ProtoEvent> {
-    use mousehop_proto::EventType;
-    let tag = *bytes.first()?;
-    if tag == EventType::Clipboard as u8 {
-        return decode_clipboard_event(bytes).ok();
-    }
-    if tag == EventType::DisplayLayout as u8 {
-        return decode_display_layout_event(bytes).ok();
-    }
-    decode_fixed_event(bytes).ok()
-}
-
 async fn connection_is_current(
     conns: &Mutex<HashMap<SocketAddr, ConnectionSlot>>,
     sessions: &SessionTracker,
@@ -1226,6 +1274,7 @@ fn clear_session_ping_state(
 mod tests {
     use super::*;
     use input_event::{Event, KeyboardEvent, PointerEvent, display::DisplayLayout};
+    use mousehop_proto::{decode_fixed_event, encode_display_layout_event};
 
     fn connection_map() -> Mutex<HashMap<SocketAddr, ConnectionSlot>> {
         Mutex::new(HashMap::new())
@@ -1742,5 +1791,22 @@ mod tests {
                 .await,
             Err(MousehopConnectionError::NotConnected)
         ));
+    }
+
+    #[tokio::test]
+    async fn eager_connect_reuses_established_transport_without_redial() {
+        let client_manager = ClientManager::default();
+        let handle = client_manager.add_client();
+        let addr: SocketAddr = "127.0.0.1:4242".parse().expect("test address");
+        client_manager.set_active_addr(handle, Some(addr));
+        let cert = Certificate::generate_self_signed(["mousehop-eager-connect-test".to_owned()])
+            .expect("test certificate");
+        let connection =
+            MousehopConnection::new(cert, client_manager.clone(), PrimaryCache::default());
+
+        assert!(connection.connect_handle(handle).await);
+        assert_eq!(client_manager.active_addr(handle), Some(addr));
+        assert!(connection.connecting.lock().await.is_empty());
+        assert_eq!(connection.sessions.current(handle), None);
     }
 }

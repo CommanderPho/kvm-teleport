@@ -557,6 +557,11 @@ impl Config {
         &self.config_path
     }
 
+    /// Directory that holds `config.toml`, certificates, and `workspace.toml`.
+    pub fn config_dir(&self) -> &Path {
+        &self.config_dir
+    }
+
     /// public key fingerprints authorized for connection, with each
     /// peer's per-pair receive-side post-processing preferences.
     pub fn authorized_fingerprints(&self) -> HashMap<String, IncomingPeerConfig> {

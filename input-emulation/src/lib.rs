@@ -419,8 +419,11 @@ impl InputEmulation {
         };
 
         if state == 0 {
-            // currently pressed => can release
-            pressed_keys.remove(&key)
+            // Always consume key-ups. A Modifiers-only snapshot can assert a
+            // modifier on backends like macOS without a matching Key-down in
+            // this set; dropping the physical up would leave that modifier stuck.
+            pressed_keys.remove(&key);
+            true
         } else {
             // currently not pressed => can press
             pressed_keys.insert(key)
@@ -491,6 +494,62 @@ trait Emulation: Send {
     /// connection still works.
     async fn warp_cursor(&mut self, _x: i32, _y: i32) -> Result<(), EmulationError> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod pressed_keys_tests {
+    use super::*;
+    use input_event::scancode::Linux::KeyLeftCtrl;
+
+    #[tokio::test]
+    async fn key_up_is_consumed_even_when_key_was_not_tracked() {
+        let mut emulation = InputEmulation::with_backend(Backend::Dummy)
+            .await
+            .expect("dummy backend");
+        assert!(emulation.create(1).await);
+
+        let key_up = Event::Keyboard(KeyboardEvent::Key {
+            time: 0,
+            key: KeyLeftCtrl as u32,
+            state: 0,
+        });
+        // Previously `remove` returned false and skipped consume, leaving
+        // Modifiers-only Control stuck on backends like macOS.
+        emulation
+            .consume(key_up, 1)
+            .await
+            .expect("idempotent key-up must be consumed");
+        assert!(!emulation.has_pressed_keys(1));
+    }
+
+    #[tokio::test]
+    async fn key_down_still_dedupes_while_key_up_clears() {
+        let mut emulation = InputEmulation::with_backend(Backend::Dummy)
+            .await
+            .expect("dummy backend");
+        assert!(emulation.create(1).await);
+
+        let key = KeyLeftCtrl as u32;
+        let down = Event::Keyboard(KeyboardEvent::Key {
+            time: 0,
+            key,
+            state: 1,
+        });
+        let up = Event::Keyboard(KeyboardEvent::Key {
+            time: 0,
+            key,
+            state: 0,
+        });
+
+        emulation.consume(down.clone(), 1).await.unwrap();
+        assert!(emulation.has_pressed_keys(1));
+        // Second down is ignored by pressed_keys dedupe.
+        emulation.consume(down, 1).await.unwrap();
+        assert!(emulation.has_pressed_keys(1));
+
+        emulation.consume(up, 1).await.unwrap();
+        assert!(!emulation.has_pressed_keys(1));
     }
 }
 

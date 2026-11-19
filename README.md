@@ -127,6 +127,20 @@ rather than waiting for the command to finish.
 Crashes are recorded either way, at
 `%LOCALAPPDATA%\Mousehop\logs\panic.log`.
 
+**Logs.** Every launch also writes a runtime log — GUI and daemon keep
+separate files so their records never interleave:
+
+- `%LOCALAPPDATA%\Mousehop\logs\mousehop-gui.log`
+- `%LOCALAPPDATA%\Mousehop\logs\mousehop-daemon.log`
+
+Connection setup (DNS resolution, dial attempts, DTLS/handshake failures)
+is logged there even when no console is attached, which is where to look
+when Setup Layout or a peer connection fails. The file logs at `info` by
+default; set `MOUSEHOP_LOG_LEVEL=debug` (or `trace` for per-event wire
+dumps) before launching for more detail. Each file rotates to `.log.old`
+at 5 MB. On macOS the same files live in `~/Library/Logs/Mousehop/`, on
+Linux in `~/.local/state/mousehop/`.
+
 </details>
 
 
@@ -258,15 +272,25 @@ cargo install --path . --force
 `rust-toolchain.toml` pins Rust **1.95.0**. Build the `.app` from the `mousehop/` crate directory so cargo-bundle resolves the icon, menu-bar template, and `osx.info_plist_exts` globs against that CWD (running from the workspace root silently drops them):
 
 ```sh
-# Create the macOS icon + menu-bar template under target/
+# Preferred: full local release build (creates a stable "Mousehop Dev"
+# signing identity if needed, vendors dylibs, syncs MousehopDev.app)
+scripts/build-macos-release.sh
+
+# Or step by step:
+scripts/create-macos-dev-cert.sh   # once; idempotent
 scripts/makeicns.sh
-# Create the .app bundle (release)
 (cd mousehop && cargo bundle --release)
-# Vendor Homebrew dylibs into the bundle, flatten the menu-bar PNG, ad-hoc sign
 scripts/copy-macos-dylib.sh target/release/bundle/osx/Mousehop.app/Contents/MacOS/mousehop
 ```
 
-The finished app is at `target/release/bundle/osx/Mousehop.app`.
+The finished app is at `target/release/bundle/osx/Mousehop.app`; the Build Exe task also syncs it to `MousehopDev.app` at the repo root.
+
+**Stable local signing (TCC).** Ad-hoc signatures (`codesign -s -`) pin Accessibility / Input Monitoring grants to a per-build cdhash, so every rebuild looks like a new app. `scripts/create-macos-dev-cert.sh` installs a self-signed **"Mousehop Dev"** identity in your login keychain; `copy-macos-dylib.sh` prefers that identity when present. After the first signed build, re-enable Mousehop once under System Settings → Privacy & Security → Accessibility (old ad-hoc grants do not transfer). Later rebuilds keep the grant. Verify with:
+
+```sh
+codesign -d -r- MousehopDev.app
+# expect: certificate leaf = H"…", not cdhash
+```
 </details>
 
 <details>
@@ -346,8 +370,13 @@ Set-Location C:\gtk-build
 gvsbuild build --vs-ver vs2026 --msys-dir=C:\msys64 --configuration release gtk4 libadwaita
 ```
 
-Release packaging also builds `librsvg` (SVG tray icon). CI builds `gtk4` +
-`libadwaita` only; that is enough to compile. To match the release zip deps:
+Release packaging also builds `librsvg` (SVG tray icon). The release zip and
+`scripts/build-windows-release.ps1` stage not only `bin\*.dll` but also the
+gdk-pixbuf SVG loader tree (`lib\gdk-pixbuf-2.0\2.10.0\loaders\pixbufloader_svg.dll`
+plus `loaders.cache`). Without that loader, a side-by-side GTK copy shadows a
+working install on `PATH` and the notification-area glyph stays blank (a
+bundled PNG fallback still shows an icon). CI builds `gtk4` + `libadwaita`
+only; that is enough to compile. To match the release zip deps:
 
 ```powershell
 gvsbuild build --vs-ver vs2026 --msys-dir=C:\msys64 --configuration release gtk4 libadwaita librsvg
@@ -431,7 +460,9 @@ cargo build -p mousehop --release
 
 `target\release\mousehop.exe` (and the debug build) need the GTK DLLs from
 `C:\gtk-build\gtk\x64\release\bin` on `PATH`, or copied next to the exe (as the
-release zip does).
+release zip / `scripts/build-windows-release.ps1` stage does). When copying
+DLLs beside the exe, also ship the gdk-pixbuf SVG loader under
+`lib\gdk-pixbuf-2.0\2.10.0\` so the tray icon can rasterize the SVG glyph.
 
 Verify:
 
@@ -575,6 +606,20 @@ crossing_modifier = "control"
 
 Where `left` can be either `left`, `right`, `top` or `bottom`.
 
+### Shared spatial layout (per-monitor)
+
+For Teleport-style placement of each machine’s **rigid monitor set** in
+shared continuous X/Y space, see [SHARED_LAYOUT.md](SHARED_LAYOUT.md).
+Configuration lives in `workspace.toml` beside `config.toml`. First-time
+placement uses **Setup Layout** on an outgoing client row (connects the peer,
+then opens the planner with that peer selected). **Shared layout…** (header and
+About → build) edits an already-applied workspace only. Authority drags host
+groups (not individual monitors); followers are view-only. The outgoing
+Position combo is removed from the GUI; legacy `position` in config remains for
+IPC and barrier seeding. Peers without the shared-workspace capability keep the
+four-edge `position` model above. Manual Win/macOS checks:
+[docs/manual-spatial-checklist.md](docs/manual-spatial-checklist.md).
+
 ### macOS Command as Control
 
 On a Mac, each outgoing client has an optional **Use Command as
@@ -601,7 +646,11 @@ the switch is off.
 Choose Control, Alt/Option, Shift, or Super/Command/Windows in the GUI. The
 equivalent `[[clients]]` settings are `require_crossing_modifier = true` and
 `crossing_modifier = "control"`, `"alt"`, `"shift"`, or `"super"`. The
-default is off, so existing clients retain automatic edge crossing.
+default is off, so existing clients retain automatic edge crossing. On
+Windows (and other backends that steal input while capturing), held gate
+modifiers are released locally for the duration of capture so the host OS
+does not keep them stuck after a swallowed key-up, then restored on return
+if they are still physically held.
 
 ### Multi-homed peers (interfaces, latency, locking)
 
