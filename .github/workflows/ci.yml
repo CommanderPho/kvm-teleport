@@ -1,14 +1,11 @@
 name: CI
 
-# Per-PR safety net: fmt + clippy + test on every OS we ship to.
-# Release-time builds live in release.yml; this is the pre-merge gate
-# that keeps main green.
+# Manual safety net: fmt + clippy + test on every OS we ship to.
+# Release-time builds live in release.yml. Run from the Actions tab
+# (workflow_dispatch) — no push / PR / schedule triggers.
 
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always

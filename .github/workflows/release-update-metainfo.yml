@@ -1,12 +1,14 @@
 name: release-update-metainfo
 
 # Prepend a per-version <release><description> block to the Flatpak
-# metainfo XML whenever a new GitHub Release is published. The
-# description body is parsed from the matching CHANGELOG.md section so
-# Flathub's Version-history shows real notes instead of an empty stub.
+# metainfo XML for a Release tag. The description body is parsed from
+# the matching CHANGELOG.md section so Flathub's Version-history shows
+# real notes instead of an empty stub.
 #
 # Idempotent: if the metainfo already references the version, the run
 # is a no-op.
+#
+# Manual only — run from the Actions tab (workflow_dispatch).
 #
 # SHARED WORKFLOW — this file is byte-identical across
 # jondkinney/{hyprcorrect,mousehop,tensaku,vernier}. Every per-repo value is
@@ -14,8 +16,6 @@ name: release-update-metainfo
 # repo-specific. A drift-check guards the three copies.
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -37,11 +37,7 @@ jobs:
       - name: Resolve tag / version / date
         id: meta
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="${{ github.event.release.tag_name }}"
-          fi
+          TAG="${{ inputs.tag }}"
           VERSION="${TAG#v}"
           DATE=$(date -u +%Y-%m-%d)
           echo "tag=$TAG"         >> "$GITHUB_OUTPUT"

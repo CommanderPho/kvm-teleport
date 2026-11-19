@@ -1,14 +1,15 @@
 name: release-update-site
 
-# Push the new release version onto the project's landing page so the
-# version chip reflects the release that just published. Uses an SSH
-# deploy key (SITE_DEPLOY_KEY) scoped to the <repo>-site repo rather
-# than a PAT — no expiry, and it can't read or write anything outside
-# that one repo.
+# Push a release version onto the project's landing page so the
+# version chip matches the chosen tag. Uses an SSH deploy key
+# (SITE_DEPLOY_KEY) scoped to the <repo>-site repo rather than a PAT —
+# no expiry, and it can't read or write anything outside that one repo.
 #
 # The landing page must wrap its version string in
 #   <span data-<repo>-version>v<semver></span>
 # as a stable anchor; reword the surrounding copy freely.
+#
+# Manual only — run from the Actions tab (workflow_dispatch).
 #
 # SHARED WORKFLOW — this file is byte-identical across
 # jondkinney/{hyprcorrect,mousehop,tensaku,vernier}. Every per-repo value is
@@ -16,8 +17,6 @@ name: release-update-site
 # repo-specific. A drift-check guards the three copies.
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -32,11 +31,7 @@ jobs:
       - name: Resolve target tag
         id: tag
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="${{ github.event.release.tag_name }}"
-          fi
+          TAG="${{ inputs.tag }}"
           VERSION="${TAG#v}"
           echo "tag=$TAG"         >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
