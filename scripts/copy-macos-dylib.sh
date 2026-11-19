@@ -178,8 +178,19 @@ if ! otool -l "$exec_path" | grep -q "@executable_path/../Frameworks"; then
   install_name_tool -add_rpath "@executable_path/../Frameworks" "$exec_path"
 fi
 
-# Se-sign the .app
-codesign --force --deep --sign - "$bundle_path"
+# Re-sign the .app. Prefer the stable "Mousehop Dev" identity when present so
+# TCC (Accessibility / Input Monitoring) grants survive rebuilds; ad-hoc
+# signatures pin the designated requirement to a per-build cdhash and lose
+# the grant every time. Do not add --options runtime here: hardened runtime
+# without entitlements silently blocks Accessibility for local builds.
+DEV_CERT_NAME="${DEV_CERT_NAME:-Mousehop Dev}"
+if security find-identity -p codesigning 2>/dev/null | grep -qF "$DEV_CERT_NAME"; then
+  echo "Signing with stable identity: $DEV_CERT_NAME"
+  codesign --force --deep --sign "$DEV_CERT_NAME" "$bundle_path"
+else
+  echo "Signing ad-hoc (no \"$DEV_CERT_NAME\" identity; TCC grants will not survive rebuilds)"
+  codesign --force --deep --sign - "$bundle_path"
+fi
 
 # Exercise dyld against the finished dependency closure. `--version` exits
 # before the GUI or daemon starts, but a missing transitive dylib still makes

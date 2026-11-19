@@ -1069,6 +1069,7 @@ impl Dispatch<WlPointer, ()> for State {
                         CaptureEvent::Begin {
                             cursor: Some(cursor),
                             normalized_cursor,
+                            outbound: None,
                         },
                     ));
                 }
@@ -1250,6 +1251,7 @@ impl Dispatch<WlKeyboard, ()> for State {
                             CaptureEvent::Begin {
                                 cursor: Some(preflight.cursor),
                                 normalized_cursor: preflight.normalized_cursor,
+                                outbound: None,
                             },
                         ));
                         queue_modifier_snapshot(app, window.pos, &held_modifiers);

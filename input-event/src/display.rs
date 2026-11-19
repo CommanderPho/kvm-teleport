@@ -132,20 +132,44 @@ impl DisplayRect {
         )
     }
 
-    fn cross_range(self, edge: DisplayEdge) -> (i32, i32) {
+    /// Returns the half-open cross-axis range covered by this rectangle on `edge`.
+    pub const fn cross_range(self, edge: DisplayEdge) -> (i32, i32) {
         match edge {
             DisplayEdge::Left | DisplayEdge::Right => (self.y, self.bottom),
             DisplayEdge::Top | DisplayEdge::Bottom => (self.x, self.right),
         }
     }
 
-    fn edge_coordinate(self, edge: DisplayEdge) -> i32 {
+    /// Returns the inclusive on-axis coordinate of the last in-layout pixel on `edge`.
+    pub const fn edge_coordinate(self, edge: DisplayEdge) -> i32 {
         match edge {
             DisplayEdge::Left => self.x,
             DisplayEdge::Right => self.right - 1,
             DisplayEdge::Top => self.y,
             DisplayEdge::Bottom => self.bottom - 1,
         }
+    }
+
+    /// Returns a rectangle translated by `(dx, dy)`.
+    pub fn translated(self, dx: i32, dy: i32) -> Option<Self> {
+        let x = i64::from(self.x).checked_add(i64::from(dx))?;
+        let y = i64::from(self.y).checked_add(i64::from(dy))?;
+        let right = i64::from(self.right).checked_add(i64::from(dx))?;
+        let bottom = i64::from(self.bottom).checked_add(i64::from(dy))?;
+        Some(Self {
+            x: i32::try_from(x).ok()?,
+            y: i32::try_from(y).ok()?,
+            right: i32::try_from(right).ok()?,
+            bottom: i32::try_from(bottom).ok()?,
+        })
+    }
+
+    /// Returns whether this rectangle overlaps another (areas intersect).
+    pub const fn overlaps(self, other: Self) -> bool {
+        self.x < other.right
+            && other.x < self.right
+            && self.y < other.bottom
+            && other.y < self.bottom
     }
 }
 

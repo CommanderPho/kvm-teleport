@@ -26,6 +26,7 @@ pub mod clipboard;
 pub mod desktop_entries;
 pub mod error;
 pub mod frontmost_app;
+pub mod spatial;
 
 #[cfg(all(unix, feature = "libei", not(target_os = "macos")))]
 mod libei;
@@ -72,6 +73,10 @@ pub enum CaptureEvent {
     Begin {
         cursor: Option<(i32, i32)>,
         normalized_cursor: Option<(f32, f32)>,
+        /// When spatial routing is armed, backends may report the outbound
+        /// motion direction used for the crossing. `None` keeps legacy
+        /// Position-based handoff.
+        outbound: Option<input_event::workspace::OutboundDir>,
     },
     /// input event coming from capture handle
     Input(Event),
@@ -434,6 +439,12 @@ impl InputCapture {
     /// Backends that can observe modifier state before taking ownership use
     /// this to avoid a grab/release cycle for a blocked crossing. The outer
     /// capture task retains its gate as a safety net for other backends.
+    /// Arm Win/macOS backends with spatial route segments (no-op on Linux
+    /// backends that still use Position barriers only).
+    pub fn set_spatial_routes(&mut self, routes: Vec<spatial::ArmedRoute>) {
+        spatial::set_armed_routes(routes);
+    }
+
     pub async fn set_crossing_modifier(
         &mut self,
         pos: Position,
@@ -910,6 +921,7 @@ impl InputCapture {
             CaptureEvent::Begin {
                 cursor,
                 normalized_cursor,
+                outbound: _,
             } => {
                 // Receiver geometry and sensitivity belong to the previous
                 // connection epoch. Current peers republish all three before
@@ -1448,6 +1460,7 @@ mod tests {
             &CaptureEvent::Begin {
                 cursor: Some((-1000, 500)),
                 normalized_cursor: Some(normalized),
+                outbound: None,
             },
         );
 
@@ -1585,6 +1598,7 @@ mod tests {
             &CaptureEvent::Begin {
                 cursor: Some((100, 100)),
                 normalized_cursor: None,
+                outbound: None,
             },
         );
         capture.set_peer_bounds(Position::Right, 2000, 1000);
@@ -1607,6 +1621,7 @@ mod tests {
             &CaptureEvent::Begin {
                 cursor: Some((100, 100)),
                 normalized_cursor: None,
+                outbound: None,
             },
         );
         capture.set_peer_bounds(Position::Right, 2560, 1440);
@@ -1629,6 +1644,7 @@ mod tests {
             &CaptureEvent::Begin {
                 cursor: Some((100, 100)),
                 normalized_cursor: None,
+                outbound: None,
             },
         );
         capture.set_peer_bounds(Position::Right, 2000, 1000);
@@ -1672,6 +1688,7 @@ mod tests {
             &CaptureEvent::Begin {
                 cursor: Some((100, 100)),
                 normalized_cursor: None,
+                outbound: None,
             },
         );
         // The restarted sender begins its generation counter again. Its clock

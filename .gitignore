@@ -15,3 +15,7 @@ extfile.conf
 .flatpak-builder
 repo
 .cursor/chats
+mousehop.exe
+MousehopDev.app/
+.cursorindexingignore
+.cursorindexingignore.bak

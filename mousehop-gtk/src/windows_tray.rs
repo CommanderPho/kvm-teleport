@@ -33,7 +33,10 @@ use std::time::{Duration, Instant};
 
 use adw::prelude::*;
 use async_channel::Sender;
-use gtk::{gdk_pixbuf::Pixbuf, gio, glib};
+use gtk::{
+    gdk_pixbuf::{Pixbuf, PixbufLoader},
+    gio, glib,
+};
 
 use windows::Win32::Foundation::{E_FAIL, HINSTANCE, HWND, LPARAM, LRESULT, POINT, TRUE, WPARAM};
 use windows::Win32::Graphics::Gdi::{
@@ -559,7 +562,12 @@ fn taskbar_is_light() -> bool {
 /// takes a finished bitmap, so a white glyph would simply vanish on a
 /// light taskbar.
 ///
-/// Returns a null `HICON` if anything fails — the icon still occupies
+/// Prefers the live SVG (theme-accurate `currentColor` tint). If
+/// gdk-pixbuf cannot decode SVG — typical when a staged Windows build
+/// is missing `pixbufloader_svg.dll` — falls back to a pre-rasterized
+/// PNG bundled in the GResource (PNG is built into gdk-pixbuf here).
+///
+/// Returns a null `HICON` if both paths fail — the icon still occupies
 /// (and responds in) its slot, blank, which beats having no way back
 /// to a hidden window.
 fn render_icon(light_taskbar: bool) -> HICON {
@@ -567,14 +575,23 @@ fn render_icon(light_taskbar: bool) -> HICON {
     // silhouette that stays readable at 16-22 px. See
     // resources/icons/mousehop-tray.svg.
     const SVG_RESOURCE: &str = "/com/mousehop/Mousehop/icons/mousehop-tray.svg";
+    const PNG_LIGHT: &str = "/com/mousehop/Mousehop/icons/mousehop-tray-light.png";
+    const PNG_DARK: &str = "/com/mousehop/Mousehop/icons/mousehop-tray-dark.png";
     let ink = if light_taskbar { "#000000" } else { "#ffffff" };
+    let png_resource = if light_taskbar { PNG_LIGHT } else { PNG_DARK };
 
     // `max(16)` guards against a hostile or unset metric; the shell
     // rescales anything it doesn't like anyway.
     let width = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16);
     let height = unsafe { GetSystemMetrics(SM_CYSMICON) }.max(16);
 
-    let Some(pixbuf) = render_svg(SVG_RESOURCE, ink, width, height) else {
+    let pixbuf = render_svg(SVG_RESOURCE, ink, width, height).or_else(|| {
+        log::warn!(
+            "windows_tray: SVG tray glyph unavailable — falling back to bundled PNG ({png_resource})"
+        );
+        render_png(png_resource, width, height)
+    });
+    let Some(pixbuf) = pixbuf else {
         return HICON::default();
     };
     unsafe { icon_from_pixbuf(&pixbuf) }.unwrap_or_default()
@@ -598,12 +615,41 @@ fn render_svg(resource: &str, ink: &str, width: i32, height: i32) -> Option<Pixb
         }
     };
     let recolored = svg.replace("currentColor", ink);
-    let bytes = glib::Bytes::from_owned(recolored.into_bytes());
-    let stream = gio::MemoryInputStream::from_bytes(&bytes);
-    match Pixbuf::from_stream_at_scale(&stream, width, height, true, gio::Cancellable::NONE) {
+    // Force the SVG loader by MIME type. `from_stream_at_scale` only
+    // sniffs the payload; on staged Windows builds that often yields
+    // "Unrecognized image file format" even when pixbufloader_svg is
+    // registered via GDK_PIXBUF_MODULE_FILE.
+    let loader = match PixbufLoader::with_mime_type("image/svg+xml") {
+        Ok(loader) => loader,
+        Err(e) => {
+            log::warn!("windows_tray: no SVG pixbuf loader available: {e}");
+            return None;
+        }
+    };
+    loader.set_size(width, height);
+    if let Err(e) = loader.write(recolored.as_bytes()) {
+        log::warn!("windows_tray: rasterize tray SVG at {width}x{height}px: {e}");
+        return None;
+    }
+    if let Err(e) = loader.close() {
+        log::warn!("windows_tray: finish tray SVG at {width}x{height}px: {e}");
+        return None;
+    }
+    match loader.pixbuf() {
+        Some(pixbuf) => Some(pixbuf),
+        None => {
+            log::warn!("windows_tray: SVG loader produced no pixbuf at {width}x{height}px");
+            None
+        }
+    }
+}
+
+/// Load a pre-rasterized tray PNG from the GResource (no SVG loader).
+fn render_png(resource: &str, width: i32, height: i32) -> Option<Pixbuf> {
+    match Pixbuf::from_resource_at_scale(resource, width, height, true) {
         Ok(pixbuf) => Some(pixbuf),
         Err(e) => {
-            log::warn!("windows_tray: rasterize tray SVG at {width}x{height}px: {e}");
+            log::warn!("windows_tray: load tray PNG fallback {resource}: {e}");
             None
         }
     }

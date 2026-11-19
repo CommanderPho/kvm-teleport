@@ -12,8 +12,20 @@ use gtk::{
 
 use mousehop_ipc::{
     ClientConfig, ClientHandle, ClientState, ConnectionMode, DEFAULT_PORT, FrontendRequest,
-    FrontendRequestWriter, Position, RemoteHostState,
+    FrontendRequestWriter, RemoteHostState, WorkspaceIpc,
 };
+use std::rc::Rc;
+
+const SETUP_LAYOUT_TIMEOUT_SECS: u32 = 25;
+
+/// True when a workspace has been applied at least once (edit path only).
+pub(crate) fn workspace_is_applied(ws: &WorkspaceIpc) -> bool {
+    !ws.workspace_id.is_empty() && ws.revision > 0
+}
+
+fn peer_is_placed(ws: &WorkspaceIpc, fingerprint: &str) -> bool {
+    ws.placements.iter().any(|p| p.fingerprint == fingerprint)
+}
 
 use crate::{
     authorization_window::AuthorizationWindow, clipboard_privacy_window::ClipboardPrivacyWindow,
@@ -230,6 +242,13 @@ impl Window {
                             window,
                             move |row: ClientRow, active: bool| {
                                 if let Some(client) = window.client_by_idx(row.index() as u32) {
+                                    if active && !window.client_may_activate(&client) {
+                                        window.show_toast(
+                                            "Use Setup Layout to place this peer first",
+                                        );
+                                        row.set_active(false);
+                                        return;
+                                    }
                                     log::debug!(
                                         "request: {} client",
                                         if active { "activating" } else { "deactivating" }
@@ -271,23 +290,14 @@ impl Window {
                         ),
                     );
                     row.connect_closure(
-                        "request-position-change",
+                        "request-setup-layout",
                         false,
                         closure_local!(
                             #[strong]
                             window,
-                            move |row: ClientRow, pos_idx: u32| {
+                            move |row: ClientRow| {
                                 if let Some(client) = window.client_by_idx(row.index() as u32) {
-                                    let position = match pos_idx {
-                                        0 => Position::Left,
-                                        1 => Position::Right,
-                                        2 => Position::Top,
-                                        _ => Position::Bottom,
-                                    };
-                                    window.request(FrontendRequest::UpdatePosition(
-                                        client.handle(),
-                                        position,
-                                    ));
+                                    window.begin_setup_layout(&client);
                                 }
                             }
                         ),
@@ -498,7 +508,6 @@ impl Window {
         };
         row.set_hostname(client.hostname);
         row.set_port(client.port);
-        row.set_position(client.pos);
         row.set_clipboard_send(client.clipboard_send);
         row.set_command_as_ctrl(client.command_as_ctrl);
         row.set_crossing_modifier(client.require_crossing_modifier, client.crossing_modifier);
@@ -544,8 +553,151 @@ impl Window {
             "peer-commit",
             crate::client_object::peer_commit_to_string(state.peer_commit),
         );
+        client_object.set_peer_fingerprint(state.peer_fingerprint.clone());
         row.refresh_version_status();
         row.refresh_addresses(&client_object);
+        if let Some(fp) = state.peer_fingerprint.as_deref() {
+            self.on_setup_layout_fingerprint(handle, fp);
+        }
+    }
+
+    fn client_may_activate(&self, client: &ClientObject) -> bool {
+        let Some(fp) = client.peer_fingerprint() else {
+            return false;
+        };
+        let ws = self.imp().workspace.borrow();
+        if !workspace_is_applied(&ws) || !peer_is_placed(&ws, &fp) {
+            return false;
+        }
+        // Setup Layout draft-seeds placements via GetWorkspace before Apply.
+        if self
+            .imp()
+            .setup_awaiting_apply
+            .borrow()
+            .contains(&client.handle())
+        {
+            return false;
+        }
+        true
+    }
+
+    fn begin_setup_layout(&self, client: &ClientObject) {
+        let hostname: Option<String> = client.property("hostname");
+        let Some(hostname) = hostname.filter(|h| !h.is_empty()) else {
+            self.show_toast("Set a hostname before Setup Layout");
+            return;
+        };
+
+        let handle = client.handle();
+        // Re-click while still waiting for this peer's fingerprint: keep the
+        // in-flight Activate instead of cancelling via a new generation.
+        if self.imp().pending_setup_handle.get() == Some(handle)
+            && client.peer_fingerprint().is_none()
+        {
+            self.show_toast(&format!("Still connecting to {hostname}…"));
+            return;
+        }
+
+        // Only gate Enable when this peer is not already in an applied layout.
+        // Re-opening Setup Layout for a placed peer must not block Activate.
+        {
+            let ws = self.imp().workspace.borrow();
+            let already_placed = client
+                .peer_fingerprint()
+                .is_some_and(|fp| workspace_is_applied(&ws) && peer_is_placed(&ws, &fp));
+            if !already_placed {
+                self.imp().setup_awaiting_apply.borrow_mut().insert(handle);
+            }
+        }
+        let generation = self.imp().pending_setup_generation.get().wrapping_add(1);
+        self.imp().pending_setup_generation.set(generation);
+        self.imp().pending_setup_open.replace(None);
+
+        if let Some(fp) = client.peer_fingerprint() {
+            self.show_toast("Opening shared layout…");
+            self.imp().pending_setup_handle.set(None);
+            self.request_setup_layout_workspace(fp);
+        } else {
+            self.show_toast(&format!("Connecting to {hostname}…"));
+            log::info!("setup layout: requesting eager connect to {hostname} (handle {handle})");
+            self.imp().pending_setup_handle.set(Some(handle));
+            // Eager dial only — no input events, no activation side
+            // effects. The daemon identifies the peer (fingerprint)
+            // and broadcasts it; `on_setup_layout_fingerprint` then
+            // opens the editor.
+            self.request(FrontendRequest::Connect(handle));
+        }
+        self.arm_setup_layout_timeout(generation);
+    }
+
+    fn on_setup_layout_fingerprint(&self, handle: ClientHandle, fingerprint: &str) {
+        if self.imp().pending_setup_handle.get() != Some(handle) {
+            return;
+        }
+        log::info!("setup layout: peer identified ({fingerprint}); opening shared layout");
+        self.imp().pending_setup_handle.set(None);
+        self.request_setup_layout_workspace(fingerprint.to_string());
+    }
+
+    fn request_setup_layout_workspace(&self, fingerprint: String) {
+        self.imp().pending_setup_open.replace(Some(fingerprint));
+        self.request(FrontendRequest::GetWorkspace);
+        // If a WorkspaceUpdated is already cached and arrives slowly,
+        // also open from the current snapshot after a short beat so an
+        // empty-cache race does not leave the user hanging forever.
+        let generation = self.imp().pending_setup_generation.get();
+        let window = self.clone();
+        glib::spawn_future_local(async move {
+            glib::timeout_future_seconds(1).await;
+            if window.imp().pending_setup_generation.get() != generation {
+                return;
+            }
+            let fp = window.imp().pending_setup_open.borrow().clone();
+            if let Some(fp) = fp {
+                window.finish_setup_layout_open(fp);
+            }
+        });
+    }
+
+    fn finish_setup_layout_open(&self, fingerprint: String) {
+        if self.imp().pending_setup_open.borrow().as_deref() != Some(fingerprint.as_str()) {
+            return;
+        }
+        self.imp().pending_setup_open.replace(None);
+        // Bump generation so the connect timeout no longer fires.
+        let generation = self.imp().pending_setup_generation.get().wrapping_add(1);
+        self.imp().pending_setup_generation.set(generation);
+        self.open_workspace_editor(Some(fingerprint));
+    }
+
+    fn arm_setup_layout_timeout(&self, generation: u64) {
+        let window = self.clone();
+        glib::spawn_future_local(async move {
+            glib::timeout_future_seconds(SETUP_LAYOUT_TIMEOUT_SECS).await;
+            if window.imp().pending_setup_generation.get() != generation {
+                return;
+            }
+            if window.imp().pending_setup_handle.get().is_none()
+                && window.imp().pending_setup_open.borrow().is_none()
+            {
+                return;
+            }
+            window.imp().pending_setup_handle.set(None);
+            window.imp().pending_setup_open.replace(None);
+            log::warn!(
+                "setup layout: timed out after {SETUP_LAYOUT_TIMEOUT_SECS}s waiting for peer \
+                 identity; see the Mousehop log file for dial/DNS details"
+            );
+            window.show_toast(
+                "Could not connect or identify peer for Setup Layout — see Mousehop log for details",
+            );
+        });
+    }
+
+    fn update_shared_layout_sensitivity(&self) {
+        let applied = workspace_is_applied(&self.imp().workspace.borrow());
+        self.imp().shared_layout_button.set_sensitive(applied);
+        self.imp().about_build_row.set_activatable(applied);
     }
 
     fn client_object_for_handle(&self, handle: ClientHandle) -> Option<ClientObject> {
@@ -774,6 +926,82 @@ impl Window {
     pub(super) fn show_toast(&self, msg: &str) {
         let toast = adw::Toast::new(msg);
         self.add_toast(toast);
+    }
+
+    pub(super) fn set_workspace(&self, ws: WorkspaceIpc) {
+        let prev_revision = self.imp().workspace_revision.get();
+        let applied = workspace_is_applied(&ws);
+        // An Apply bumps revision (or first-applies from revision 0). Clear
+        // Setup Layout gates for peers now present in placements.
+        if applied && ws.revision > prev_revision {
+            let placed: std::collections::HashSet<&str> = ws
+                .placements
+                .iter()
+                .map(|p| p.fingerprint.as_str())
+                .collect();
+            self.imp()
+                .setup_awaiting_apply
+                .borrow_mut()
+                .retain(|handle| {
+                    let Some(client) = self.client_object_for_handle(*handle) else {
+                        return false;
+                    };
+                    !matches!(
+                        client.peer_fingerprint(),
+                        Some(fp) if placed.contains(fp.as_str())
+                    )
+                });
+        }
+        self.imp().workspace_revision.set(ws.revision);
+        *self.imp().workspace.borrow_mut() = ws.clone();
+        self.update_shared_layout_sensitivity();
+        if let Some(fp) = self.imp().pending_setup_open.borrow().clone() {
+            self.finish_setup_layout_open(fp);
+        }
+        if let Some(selection) = self.imp().pending_editor_open.borrow_mut().take() {
+            self.open_workspace_editor(selection);
+        }
+        if let Some(hook) = self.imp().workspace_editor_hook.borrow().clone() {
+            hook(ws);
+        }
+    }
+
+    /// Request a fresh workspace snapshot, then open the editor when it arrives.
+    pub(super) fn request_open_workspace_editor(&self, initial_selected: Option<String>) {
+        *self.imp().pending_editor_open.borrow_mut() = Some(initial_selected);
+        self.request(FrontendRequest::GetWorkspace);
+    }
+
+    pub(super) fn open_workspace_editor(&self, initial_selected: Option<String>) {
+        let ws = self.imp().workspace.borrow().clone();
+        let window = self.clone();
+        let request = Rc::new(move |req: FrontendRequest| {
+            window.request(req);
+        }) as Rc<dyn Fn(FrontendRequest)>;
+        let window = self.clone();
+        let register_live = Rc::new(move |hook: Option<Rc<dyn Fn(WorkspaceIpc)>>| {
+            *window.imp().workspace_editor_hook.borrow_mut() = hook;
+        }) as Rc<dyn Fn(Option<Rc<dyn Fn(WorkspaceIpc)>>)>;
+        let window = self.clone();
+        let register_error = Rc::new(move |hook: Option<Rc<dyn Fn(String)>>| {
+            *window.imp().workspace_editor_error_hook.borrow_mut() = hook;
+        }) as Rc<dyn Fn(Option<Rc<dyn Fn(String)>>)>;
+        crate::workspace_editor::present_workspace_editor(
+            self,
+            request,
+            ws,
+            register_live,
+            register_error,
+            initial_selected,
+        );
+    }
+
+    pub(super) fn notify_workspace_validation_error(&self, msg: String) {
+        if let Some(hook) = self.imp().workspace_editor_error_hook.borrow().clone() {
+            hook(msg);
+        } else {
+            self.show_toast(msg.as_str());
+        }
     }
 
     pub(super) fn add_toast(&self, toast: adw::Toast) {

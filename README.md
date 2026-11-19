@@ -127,6 +127,20 @@ rather than waiting for the command to finish.
 Crashes are recorded either way, at
 `%LOCALAPPDATA%\Mousehop\logs\panic.log`.
 
+**Logs.** Every launch also writes a runtime log — GUI and daemon keep
+separate files so their records never interleave:
+
+- `%LOCALAPPDATA%\Mousehop\logs\mousehop-gui.log`
+- `%LOCALAPPDATA%\Mousehop\logs\mousehop-daemon.log`
+
+Connection setup (DNS resolution, dial attempts, DTLS/handshake failures)
+is logged there even when no console is attached, which is where to look
+when Setup Layout or a peer connection fails. The file logs at `info` by
+default; set `MOUSEHOP_LOG_LEVEL=debug` (or `trace` for per-event wire
+dumps) before launching for more detail. Each file rotates to `.log.old`
+at 5 MB. On macOS the same files live in `~/Library/Logs/Mousehop/`, on
+Linux in `~/.local/state/mousehop/`.
+
 </details>
 
 
@@ -226,16 +240,56 @@ The `pre-commit` script runs `cargo fmt --all` (and fails if files were modified
 <details>
     <summary>MacOS</summary>
 
+Match the Rust host to your Homebrew prefix. On Apple Silicon use `/opt/homebrew` with an `aarch64-apple-darwin` toolchain (avoid a Rosetta/`x86_64` shell linking against arm64 dylibs, or `/usr/local` Intel Homebrew mixed into `PATH`/`PKG_CONFIG_PATH`). On Intel Macs use `/usr/local` with `x86_64-apple-darwin`.
+
 ```sh
-# Install dependencies
-brew install libadwaita pkg-config imagemagick
-cargo install cargo-bundle
-# Create the macOS icon file
+# Install dependencies (librsvg provides rsvg-convert for the icon script;
+# libgit2 is required by the mousehop build script / shadow-rs)
+brew install gtk4 libadwaita pkg-config imagemagick librsvg libgit2
+```
+
+`cargo install cargo-bundle` for **0.12.0** currently fails to compile (`sigstore` 0.14.0 hits `E0283` when `hybrid-array` is in the graph). Until upstream bumps the dep, install a patched copy that uses `sigstore` 0.15.0:
+
+```sh
+tmpdir=$(mktemp -d)
+cd "$tmpdir"
+curl -sL https://static.crates.io/crates/cargo-bundle/cargo-bundle-0.12.0.crate | tar xz
+cd cargo-bundle-0.12.0
+python3 - <<'PY'
+from pathlib import Path
+p = Path("Cargo.toml")
+text = p.read_text()
+old = '[dependencies.sigstore]\nversion = "0.14.0"'
+new = '[dependencies.sigstore]\nversion = "0.15.0"'
+if old not in text:
+    raise SystemExit("sigstore 0.14.0 pin not found; crate may already be fixed")
+p.write_text(text.replace(old, new, 1))
+print("bumped sigstore -> 0.15.0")
+PY
+cargo install --path . --force
+```
+
+`rust-toolchain.toml` pins Rust **1.95.0**. Build the `.app` from the `mousehop/` crate directory so cargo-bundle resolves the icon, menu-bar template, and `osx.info_plist_exts` globs against that CWD (running from the workspace root silently drops them):
+
+```sh
+# Preferred: full local release build (creates a stable "Mousehop Dev"
+# signing identity if needed, vendors dylibs, syncs MousehopDev.app)
+scripts/build-macos-release.sh
+
+# Or step by step:
+scripts/create-macos-dev-cert.sh   # once; idempotent
 scripts/makeicns.sh
-# Create the .app bundle
-cargo bundle
-# Copy all dynamic libraries into the bundle, and update the bundle to find them there
-scripts/copy-macos-dylib.sh
+(cd mousehop && cargo bundle --release)
+scripts/copy-macos-dylib.sh target/release/bundle/osx/Mousehop.app/Contents/MacOS/mousehop
+```
+
+The finished app is at `target/release/bundle/osx/Mousehop.app`; the Build Exe task also syncs it to `MousehopDev.app` at the repo root.
+
+**Stable local signing (TCC).** Ad-hoc signatures (`codesign -s -`) pin Accessibility / Input Monitoring grants to a per-build cdhash, so every rebuild looks like a new app. `scripts/create-macos-dev-cert.sh` installs a self-signed **"Mousehop Dev"** identity in your login keychain; `copy-macos-dylib.sh` prefers that identity when present. After the first signed build, re-enable Mousehop once under System Settings → Privacy & Security → Accessibility (old ad-hoc grants do not transfer). Later rebuilds keep the grant. Verify with:
+
+```sh
+codesign -d -r- MousehopDev.app
+# expect: certificate leaf = H"…", not cdhash
 ```
 </details>
 
@@ -280,44 +334,150 @@ nix develop
 <details>
     <summary>Windows</summary>
 
-- First install [Rust](https://www.rust-lang.org/tools/install).
+Build Mousehop on Windows with the MSVC toolchain and a GTK 4 + Libadwaita stack from
+[gvsbuild](https://github.com/wingtk/gvsbuild). Official gtk-rs notes:
+[gtk-rs.org installation (Windows)](https://gtk-rs.org/gtk4-rs/stable/latest/book/installation_windows.html).
 
-- Then follow the instructions at [gtk-rs.org](https://gtk-rs.org/gtk4-rs/stable/latest/book/installation_windows.html)
+#### 1. Prerequisites
 
-*TLDR:*
+- [Rustup](https://www.rust-lang.org/tools/install) / MSVC host (`rustup default stable-msvc`).
+  Admin PowerShell if needed: `winget install Rustlang.Rustup`
+- [Python 3](https://www.python.org/downloads/) on `PATH` (needed for gvsbuild)
+- [Git for Windows](https://gitforwindows.org/)
+- [MSYS2](https://www.msys2.org/) at `C:\msys64` (`winget install MSYS2.MSYS2`)
+- Visual Studio **2022** or **2026** with **Desktop development with C++**
+  (Community / Professional / Build Tools all work)
+- Optional: [uv](https://docs.astral.sh/uv/) for installing gvsbuild (`uv tool install gvsbuild`)
 
-Build gtk from source
+#### 2. Install gvsbuild and build GTK + Libadwaita
 
-- The following commands should be run in an **admin power shell** instance:
-```sh
-# install chocolatey
-Set-ExecutionPolicy Bypass -Scope Process -Force; iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+Do this in a **regular** PowerShell. Prefer a working directory **outside** this repo
+(for example `C:\gtk-build`). Mousehop pins Rust via `rust-toolchain.toml`; if
+gvsbuild runs inside the checkout, that pin can break `cargo install cargo-c` while
+building `librsvg`.
 
-# install gvsbuild dependencies
-choco install python git msys2 visualstudio2022-workload-vctools
+```powershell
+# Recommended: matches CI until a gvsbuild release includes the cargo-c PATH fix
+# https://github.com/wingtk/gvsbuild/pull/1803
+py -m pip install --user git+https://github.com/wingtk/gvsbuild.git@6e67071890322a58d4d14ccd9fc4a61cc8494006
+
+# Ensure Python Scripts (gvsbuild.exe) is on PATH, then open a new PowerShell if needed.
+# Or: uv tool install gvsbuild
+
+# Use the VS edition you have. gvsbuild defaults to vs2022; VS 2026 needs --vs-ver vs2026.
+# Cold build can take a long time. Output lands in C:\gtk-build\gtk\x64\release
+Set-Location C:\gtk-build
+gvsbuild build --vs-ver vs2026 --msys-dir=C:\msys64 --configuration release gtk4 libadwaita
 ```
 
-- The following commands should be run in a **regular power shell** instance:
+Release packaging also builds `librsvg` (SVG tray icon). The release zip and
+`scripts/build-windows-release.ps1` stage not only `bin\*.dll` but also the
+gdk-pixbuf SVG loader tree (`lib\gdk-pixbuf-2.0\2.10.0\loaders\pixbufloader_svg.dll`
+plus `loaders.cache`). Without that loader, a side-by-side GTK copy shadows a
+working install on `PATH` and the notification-area glyph stays blank (a
+bundled PNG fallback still shows an icon). CI builds `gtk4` + `libadwaita`
+only; that is enough to compile. To match the release zip deps:
 
-```sh
-# install gvsbuild with python
-python -m pip install --user pipx
-python -m pipx ensurepath
+```powershell
+gvsbuild build --vs-ver vs2026 --msys-dir=C:\msys64 --configuration release gtk4 libadwaita librsvg
 ```
 
-- Relaunch your powershell instance so the changes in the environment are reflected.
-```sh
-pipx install gvsbuild
+**Incremental / missing Libadwaita only.** If `gtk4` is already installed under
+`C:\gtk-build\gtk\x64\release` but `libadwaita-1.pc` is missing (Cargo fails with
+`pkg-config` / `libadwaita-1`):
 
-# build gtk + libadwaita
-gvsbuild build gtk4 libadwaita librsvg adwaita-icon-theme
+```powershell
+Set-Location C:\gtk-build
+gvsbuild build --vs-ver vs2026 --msys-dir=C:\msys64 --configuration release --no-deps --fast-build libadwaita
 ```
 
-- **Make sure to add the directory** `C:\gtk-build\gtk\x64\release\bin`
-[**to the `PATH` environment variable**]((https://learn.microsoft.com/en-us/previous-versions/office/developer/sharepoint-2010/ee537574(v=office.14))). Otherwise the project will fail to build.
+**`librsvg` failures**
 
-To avoid building GTK from source, it is possible to disable
-the gtk frontend (see conditional compilation).
+- **Rust toolchain pin:** run gvsbuild from outside the Mousehop checkout (see above),
+  or temporarily unset `RUSTUP_TOOLCHAIN` / move out of the directory that contains
+  `rust-toolchain.toml`.
+- **Git shadowing MSYS2:** if Meson picks Git's `usr\bin` tools instead of MSYS2,
+  temporarily rename `C:\Program Files\Git\usr\bin` and `C:\Program Files\Git\bin`
+  (admin shell), re-run gvsbuild, then restore those folders (same workaround CI uses).
+
+Confirm the stack before building Mousehop:
+
+```powershell
+Test-Path C:\gtk-build\gtk\x64\release\lib\pkgconfig\gtk4.pc
+Test-Path C:\gtk-build\gtk\x64\release\lib\pkgconfig\libadwaita-1.pc
+& C:\gtk-build\gtk\x64\release\bin\pkgconf.exe --modversion libadwaita-1
+```
+
+#### 3. Environment variables
+
+Set these as [user environment variables](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.core/about/about_environment_variables),
+then open a **new** PowerShell (or IDE terminal):
+
+| Variable | Value |
+| --- | --- |
+| `Path` (prepend) | `C:\gtk-build\gtk\x64\release\bin` |
+| `PKG_CONFIG` | `C:\gtk-build\gtk\x64\release\bin\pkgconf.exe` |
+| `PKG_CONFIG_PATH` | `C:\gtk-build\gtk\x64\release\lib\pkgconfig` |
+| `Lib` (prepend or create) | `C:\gtk-build\gtk\x64\release\lib` |
+
+Persist from PowerShell:
+
+```powershell
+$gtkBin = "C:\gtk-build\gtk\x64\release\bin"
+$gtkLib = "C:\gtk-build\gtk\x64\release\lib"
+$userPath = [Environment]::GetEnvironmentVariable("Path", "User")
+if ($userPath -notlike "*$gtkBin*") {
+    [Environment]::SetEnvironmentVariable("Path", "$gtkBin;$userPath", "User")
+}
+[Environment]::SetEnvironmentVariable("PKG_CONFIG", "$gtkBin\pkgconf.exe", "User")
+[Environment]::SetEnvironmentVariable("PKG_CONFIG_PATH", "$gtkLib\pkgconfig", "User")
+$userLib = [Environment]::GetEnvironmentVariable("Lib", "User")
+if (-not $userLib) {
+    [Environment]::SetEnvironmentVariable("Lib", $gtkLib, "User")
+} elseif ($userLib -notlike "*gtk-build*") {
+    [Environment]::SetEnvironmentVariable("Lib", "$gtkLib;$userLib", "User")
+}
+```
+
+Session-only alternative (current shell only):
+
+```powershell
+$env:Path = "C:\gtk-build\gtk\x64\release\bin;$env:Path"
+$env:PKG_CONFIG = "C:\gtk-build\gtk\x64\release\bin\pkgconf.exe"
+$env:PKG_CONFIG_PATH = "C:\gtk-build\gtk\x64\release\lib\pkgconfig"
+$env:Lib = "C:\gtk-build\gtk\x64\release\lib;$env:Lib"
+```
+
+#### 4. Build Mousehop
+
+From the repo root:
+
+```powershell
+cargo build --workspace
+# or
+cargo build -p mousehop --release
+```
+
+`target\release\mousehop.exe` (and the debug build) need the GTK DLLs from
+`C:\gtk-build\gtk\x64\release\bin` on `PATH`, or copied next to the exe (as the
+release zip / `scripts/build-windows-release.ps1` stage does). When copying
+DLLs beside the exe, also ship the gdk-pixbuf SVG loader under
+`lib\gdk-pixbuf-2.0\2.10.0\` so the tray icon can rasterize the SVG glyph.
+
+Verify:
+
+```powershell
+cargo test --workspace
+```
+
+To skip the GTK frontend and avoid needing the GTK stack:
+
+```powershell
+cargo build -p mousehop --no-default-features --release
+```
+
+(`cargo build --workspace --no-default-features` still compiles the `mousehop-gtk`
+workspace member, so prefer `-p mousehop` when omitting GTK.)
 </details>
 
 ## Usage
@@ -446,6 +606,20 @@ crossing_modifier = "control"
 
 Where `left` can be either `left`, `right`, `top` or `bottom`.
 
+### Shared spatial layout (per-monitor)
+
+For Teleport-style placement of each machine’s **rigid monitor set** in
+shared continuous X/Y space, see [SHARED_LAYOUT.md](SHARED_LAYOUT.md).
+Configuration lives in `workspace.toml` beside `config.toml`. First-time
+placement uses **Setup Layout** on an outgoing client row (connects the peer,
+then opens the planner with that peer selected). **Shared layout…** (header and
+About → build) edits an already-applied workspace only. Authority drags host
+groups (not individual monitors); followers are view-only. The outgoing
+Position combo is removed from the GUI; legacy `position` in config remains for
+IPC and barrier seeding. Peers without the shared-workspace capability keep the
+four-edge `position` model above. Manual Win/macOS checks:
+[docs/manual-spatial-checklist.md](docs/manual-spatial-checklist.md).
+
 ### macOS Command as Control
 
 On a Mac, each outgoing client has an optional **Use Command as
@@ -472,7 +646,11 @@ the switch is off.
 Choose Control, Alt/Option, Shift, or Super/Command/Windows in the GUI. The
 equivalent `[[clients]]` settings are `require_crossing_modifier = true` and
 `crossing_modifier = "control"`, `"alt"`, `"shift"`, or `"super"`. The
-default is off, so existing clients retain automatic edge crossing.
+default is off, so existing clients retain automatic edge crossing. On
+Windows (and other backends that steal input while capturing), held gate
+modifiers are released locally for the duration of capture so the host OS
+does not keep them stuck after a swallowed key-up, then restored on return
+if they are still physically held.
 
 ### Multi-homed peers (interfaces, latency, locking)
 
