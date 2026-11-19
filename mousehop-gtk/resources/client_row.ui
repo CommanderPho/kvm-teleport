@@ -55,13 +55,27 @@
 				</child>
 			</object>
 		</child>
-		<!-- first-time shared workspace placement -->
+		<!-- first-time shared workspace placement (opens Shared layout dialog) -->
 		<child>
 			<object class="AdwActionRow" id="setup_layout_row">
-				<property name="title" translatable="yes">Setup Layout</property>
-				<property name="subtitle" translatable="yes">Connect this peer and place it in the shared workspace.</property>
+				<property name="title" translatable="yes">Layout</property>
+				<property name="subtitle" translatable="yes">Connect this peer and place it in the shared workspace…</property>
 				<property name="activatable">true</property>
 				<signal name="activated" handler="handle_setup_layout" swapped="true"/>
+				<child type="suffix">
+					<object class="GtkImage">
+						<property name="icon-name">multi-monitor-layout-symbolic</property>
+						<property name="valign">center</property>
+						<property name="pixel-size">16</property>
+					</object>
+				</child>
+				<child type="suffix">
+					<object class="GtkImage">
+						<property name="icon-name">go-next-symbolic</property>
+						<property name="valign">center</property>
+						<property name="opacity">0.5</property>
+					</object>
+				</child>
 			</object>
 		</child>
 		<!-- optional modifier-gated edge crossing -->

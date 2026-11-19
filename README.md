@@ -135,7 +135,7 @@ separate files so their records never interleave:
 
 Connection setup (DNS resolution, dial attempts, DTLS/handshake failures)
 is logged there even when no console is attached, which is where to look
-when Setup Layout or a peer connection fails. The file logs at `info` by
+when Layout or a peer connection fails. The file logs at `info` by
 default; set `MOUSEHOP_LOG_LEVEL=debug` (or `trace` for per-event wire
 dumps) before launching for more detail. Each file rotates to `.log.old`
 at 5 MB. On macOS the same files live in `~/Library/Logs/Mousehop/`, on
@@ -611,7 +611,7 @@ Where `left` can be either `left`, `right`, `top` or `bottom`.
 For Teleport-style placement of each machine’s **rigid monitor set** in
 shared continuous X/Y space, see [SHARED_LAYOUT.md](SHARED_LAYOUT.md).
 Configuration lives in `workspace.toml` beside `config.toml`. First-time
-placement uses **Setup Layout** on an outgoing client row (connects the peer,
+placement uses **Layout** on an outgoing client row (connects the peer,
 then opens the planner with that peer selected). **Shared layout…** (header and
 About → build) edits an already-applied workspace only. Authority drags host
 groups (not individual monitors); followers are view-only. The outgoing

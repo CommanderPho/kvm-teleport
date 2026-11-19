@@ -162,7 +162,7 @@ impl Window {
     fn handle_shared_layout_pressed(&self, _button: &Button) {
         let window = self.obj();
         if !super::workspace_is_applied(&window.imp().workspace.borrow()) {
-            window.show_toast("Apply a shared layout first, or use Setup Layout on a client row.");
+            window.show_toast("Apply a shared layout first, or use Layout on a client row.");
             return;
         }
         window.request_open_workspace_editor(None);
@@ -348,7 +348,7 @@ impl ObjectImpl for Window {
             move |_| {
                 if !super::workspace_is_applied(&window.imp().workspace.borrow()) {
                     window.show_toast(
-                        "Apply a shared layout first, or use Setup Layout on a client row.",
+                        "Apply a shared layout first, or use Layout on a client row.",
                     );
                     return;
                 }
