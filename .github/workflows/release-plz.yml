@@ -1,17 +1,19 @@
 name: release-plz
 
+# Manual only — run from the Actions tab after reviewing the release
+# PR (or to refresh it). Packaging workflows are also manual; after a
+# successful release here, dispatch Release / Flatpak / AUR / site /
+# metainfo with the new tag.
+
 on:
-  push:
-    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
   pull-requests: write
 
 jobs:
-  # Publish the crates and cut the tag + GitHub Release once the
-  # release PR is merged. The Release fires `release: published`,
-  # which the packaging workflows (binaries, Flatpak, AUR) build on.
+  # Publish the crates and cut the tag + GitHub Release when run.
   release:
     name: release-plz release
     runs-on: ubuntu-24.04
@@ -33,8 +35,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLZ_TOKEN }}
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
 
-  # Keep the release PR (version bump + CHANGELOG) up to date on
-  # every push to main.
+  # Keep the release PR (version bump + CHANGELOG) up to date when
+  # this workflow is dispatched.
   release-pr:
     name: release-plz PR
     # Gate on the publish job: a release-pr that runs while a publish is

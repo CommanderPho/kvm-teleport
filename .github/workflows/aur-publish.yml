@@ -1,6 +1,6 @@
 name: AUR publish
 
-# Publishes all three AUR variants after release-plz cuts a Release:
+# Publishes all three AUR variants for an existing Release tag:
 #   - <repo>      (source build from the GitHub source tarball)
 #   - <repo>-bin  (prebuilt binaries from the Release tarball assets)
 #   - <repo>-git  (tracks the repo; pkgver() generated at build time)
@@ -9,14 +9,14 @@ name: AUR publish
 # This workflow pins per-release fields (pkgver, pkgrel, sha256sums),
 # regenerates .SRCINFO, and pushes to the matching AUR repo.
 #
+# Manual only — run from the Actions tab (workflow_dispatch).
+#
 # SHARED WORKFLOW — this file is byte-identical across
 # jondkinney/{hyprcorrect,mousehop,tensaku,vernier}. Every per-repo value is
 # derived from the github context at runtime; do not hardcode anything
 # repo-specific. A drift-check guards the three copies.
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -48,7 +48,7 @@ jobs:
       VARIANT_KIND: ${{ matrix.kind }}
       GH_REPO: ${{ github.repository }}
       APP: ${{ github.event.repository.name }}
-      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+      TAG: ${{ inputs.tag }}
     steps:
       - name: Install tooling
         run: pacman -Syu --noconfirm --needed git openssh pacman-contrib curl
