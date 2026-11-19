@@ -199,7 +199,10 @@ pub fn present_workspace_editor(
         #[strong]
         state,
         move |_, cr, width, height| {
-            if state.borrow().needs_fit {
+            // Drop the needs_fit read before fit_view's borrow_mut; a
+            // temporary left alive across the call panics under RefCell.
+            let needs_fit = state.borrow().needs_fit;
+            if needs_fit {
                 fit_view(&state, width, height);
             }
             // Clone so draw_canvas never holds a RefCell borrow across
@@ -403,14 +406,20 @@ pub fn present_workspace_editor(
             #[strong]
             refresh_ui,
             move |_, _n, x, y| {
-                let mut st = state.borrow_mut();
-                let (wx, wy) = st.view.view_to_world(x, y);
-                if let Some(fp) = hit_test(&st.draft, wx, wy) {
-                    st.selected = Some(fp);
+                {
+                    let mut st = state.borrow_mut();
+                    let (wx, wy) = st.view.view_to_world(x, y);
+                    if let Some(fp) = hit_test(&st.draft, wx, wy) {
+                        st.selected = Some(fp);
+                    }
                 }
-                drop(st);
-                refresh_ui();
-                area.queue_draw();
+                // Defer so peer-list rebuild cannot nest under press/drag.
+                let refresh_ui = refresh_ui.clone();
+                let area = area.clone();
+                glib::idle_add_local_once(move || {
+                    refresh_ui();
+                    area.queue_draw();
+                });
             }
         ));
         area.add_controller(click);
@@ -420,21 +429,29 @@ pub fn present_workspace_editor(
             #[strong]
             state,
             move |gesture, x, y| {
-                let mut st = state.borrow_mut();
-                let (wx, wy) = st.view.view_to_world(x, y);
-                let Some(fp) = hit_test(&st.draft, wx, wy) else {
+                // Never call gesture.set_state while holding a RefCell
+                // borrow — GTK may reenter drag-end/update synchronously.
+                let hit = {
+                    let st = state.borrow();
+                    let (wx, wy) = st.view.view_to_world(x, y);
+                    hit_test(&st.draft, wx, wy).map(|fp| {
+                        let origin = st
+                            .draft
+                            .placements
+                            .iter()
+                            .find(|p| p.fingerprint == fp)
+                            .map(|p| (p.origin_x, p.origin_y))
+                            .unwrap_or((0, 0));
+                        (fp, wx, wy, origin)
+                    })
+                };
+                let Some((fp, wx, wy, origin)) = hit else {
                     gesture.set_state(gtk::EventSequenceState::Denied);
                     return;
                 };
                 gesture.set_state(gtk::EventSequenceState::Claimed);
+                let mut st = state.borrow_mut();
                 st.selected = Some(fp.clone());
-                let origin = st
-                    .draft
-                    .placements
-                    .iter()
-                    .find(|p| p.fingerprint == fp)
-                    .map(|p| (p.origin_x, p.origin_y))
-                    .unwrap_or((0, 0));
                 st.drag = Some((fp, wx - origin.0, wy - origin.1));
             }
         ));
@@ -453,16 +470,17 @@ pub fn present_workspace_editor(
                 let Some((start_x, start_y)) = gesture.start_point() else {
                     return;
                 };
-                let mut st = state.borrow_mut();
-                let Some((fp, ox, oy)) = st.drag.clone() else {
-                    return;
-                };
-                let (wx, wy) = st.view.view_to_world(start_x + dx, start_y + dy);
-                if let Some(p) = st.draft.placements.iter_mut().find(|p| p.fingerprint == fp) {
-                    p.origin_x = wx - ox;
-                    p.origin_y = wy - oy;
+                {
+                    let mut st = state.borrow_mut();
+                    let Some((fp, ox, oy)) = st.drag.clone() else {
+                        return;
+                    };
+                    let (wx, wy) = st.view.view_to_world(start_x + dx, start_y + dy);
+                    if let Some(p) = st.draft.placements.iter_mut().find(|p| p.fingerprint == fp) {
+                        p.origin_x = wx - ox;
+                        p.origin_y = wy - oy;
+                    }
                 }
-                drop(st);
                 sync_spins(&state, &spin_x, &spin_y, &syncing);
                 refresh_preview_routes(&state);
                 area.queue_draw();
@@ -486,8 +504,14 @@ pub fn present_workspace_editor(
                     }
                 }
                 refresh_preview_routes(&state);
-                refresh_ui();
-                area.queue_draw();
+                // Defer peer-list rebuild / spin sync off the drag-end
+                // trampoline so GTK teardown cannot reenter RefCell.
+                let refresh_ui = refresh_ui.clone();
+                let area = area.clone();
+                glib::idle_add_local_once(move || {
+                    refresh_ui();
+                    area.queue_draw();
+                });
             }
         ));
         area.add_controller(drag);
@@ -650,31 +674,77 @@ fn rebuild_peer_list(
     state: &Rc<RefCell<EditorState>>,
     refresh_ui: Option<&Rc<dyn Fn()>>,
 ) {
-    let st = state.borrow();
-    for placement in &st.draft.placements {
-        let device = st
-            .draft
-            .devices
+    // Snapshot under a short borrow, then build/append widgets with no
+    // RefCell held — list.append can reenter draw/input callbacks.
+    #[derive(Clone)]
+    struct DisplayRow {
+        id: String,
+        subtitle: String,
+    }
+    struct PeerRow {
+        fingerprint: String,
+        title: String,
+        subtitle: String,
+        selected: bool,
+        displays: Vec<DisplayRow>,
+        empty_topology: bool,
+    }
+    let rows: Vec<PeerRow> = {
+        let st = state.borrow();
+        st.draft
+            .placements
             .iter()
-            .find(|d| d.fingerprint == placement.fingerprint);
-        let label = device
-            .map(|d| d.label.as_str())
-            .unwrap_or(placement.fingerprint.as_str());
-        let presence = device.map(|d| d.presence.as_str()).unwrap_or("offline");
-        let selected = st.selected.as_deref() == Some(placement.fingerprint.as_str());
+            .map(|placement| {
+                let device = st
+                    .draft
+                    .devices
+                    .iter()
+                    .find(|d| d.fingerprint == placement.fingerprint);
+                let label = device
+                    .map(|d| d.label.as_str())
+                    .unwrap_or(placement.fingerprint.as_str());
+                let presence = device.map(|d| d.presence.as_str()).unwrap_or("offline");
+                let selected = st.selected.as_deref() == Some(placement.fingerprint.as_str());
+                let displays = device
+                    .map(|d| {
+                        d.displays
+                            .iter()
+                            .map(|display| DisplayRow {
+                                id: display.id.clone(),
+                                subtitle: format!(
+                                    "{}×{} @ ({}, {})",
+                                    display.width, display.height, display.x, display.y
+                                ),
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let empty_topology = device.is_some_and(|d| d.displays.is_empty());
+                PeerRow {
+                    fingerprint: placement.fingerprint.clone(),
+                    title: label.to_string(),
+                    subtitle: format!(
+                        "{presence} · origin ({}, {}){}",
+                        placement.origin_x,
+                        placement.origin_y,
+                        if selected { " · selected" } else { "" }
+                    ),
+                    selected,
+                    displays,
+                    empty_topology,
+                }
+            })
+            .collect()
+    };
 
+    for peer in rows {
         let row = adw::ExpanderRow::new();
-        row.set_title(label);
-        row.set_subtitle(&format!(
-            "{presence} · origin ({}, {}){}",
-            placement.origin_x,
-            placement.origin_y,
-            if selected { " · selected" } else { "" }
-        ));
-        if selected {
+        row.set_title(&peer.title);
+        row.set_subtitle(&peer.subtitle);
+        if peer.selected {
             row.add_css_class("accent");
         }
-        let fp = placement.fingerprint.clone();
+        let fp = peer.fingerprint;
         if let Some(refresh_ui) = refresh_ui {
             let select = GestureClick::new();
             select.connect_pressed(glib::clone!(
@@ -697,23 +767,18 @@ fn rebuild_peer_list(
             ));
             row.add_controller(select);
         }
-        if let Some(device) = device {
-            for display in &device.displays {
-                let drow = adw::ActionRow::new();
-                drow.set_title(&display.id);
-                drow.set_subtitle(&format!(
-                    "{}×{} @ ({}, {})",
-                    display.width, display.height, display.x, display.y
-                ));
-                drow.set_sensitive(false);
-                row.add_row(&drow);
-            }
-            if device.displays.is_empty() {
-                let drow = adw::ActionRow::new();
-                drow.set_title("(no topology yet)");
-                drow.set_sensitive(false);
-                row.add_row(&drow);
-            }
+        for display in peer.displays {
+            let drow = adw::ActionRow::new();
+            drow.set_title(&display.id);
+            drow.set_subtitle(&display.subtitle);
+            drow.set_sensitive(false);
+            row.add_row(&drow);
+        }
+        if peer.empty_topology {
+            let drow = adw::ActionRow::new();
+            drow.set_title("(no topology yet)");
+            drow.set_sensitive(false);
+            row.add_row(&drow);
         }
         list.append(&row);
     }

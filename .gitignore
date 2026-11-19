@@ -17,3 +17,5 @@ repo
 .cursor/chats
 mousehop.exe
 MousehopDev.app/
+.cursorindexingignore
+.cursorindexingignore.bak
