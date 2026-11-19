@@ -55,25 +55,44 @@
 				</child>
 			</object>
 		</child>
-		<!-- first-time shared workspace placement (opens Shared layout dialog) -->
+		<!-- first-time shared workspace placement (opens Shared layout dialog).
+		     Use activatable-widget + flat button (same pattern as Release Shortcut)
+		     instead of a bare activatable ActionRow: on Windows, activating an
+		     ExpanderRow child with only suffix GtkImages can tear down mid-click. -->
 		<child>
 			<object class="AdwActionRow" id="setup_layout_row">
 				<property name="title" translatable="yes">Layout</property>
 				<property name="subtitle" translatable="yes">Connect this peer and place it in the shared workspace…</property>
-				<property name="activatable">true</property>
-				<signal name="activated" handler="handle_setup_layout" swapped="true"/>
+				<property name="activatable-widget">setup_layout_button</property>
 				<child type="suffix">
-					<object class="GtkImage">
-						<property name="icon-name">multi-monitor-layout-symbolic</property>
+					<object class="GtkButton" id="setup_layout_button">
 						<property name="valign">center</property>
-						<property name="pixel-size">16</property>
-					</object>
-				</child>
-				<child type="suffix">
-					<object class="GtkImage">
-						<property name="icon-name">go-next-symbolic</property>
-						<property name="valign">center</property>
-						<property name="opacity">0.5</property>
+						<property name="tooltip-text" translatable="yes">Open shared layout…</property>
+						<signal name="clicked" handler="handle_setup_layout" swapped="true"/>
+						<child>
+							<object class="GtkBox">
+								<property name="spacing">6</property>
+								<property name="valign">center</property>
+								<child>
+									<object class="GtkImage">
+										<property name="icon-name">multi-monitor-layout-symbolic</property>
+										<property name="pixel-size">16</property>
+									</object>
+								</child>
+								<child>
+									<object class="GtkImage">
+										<property name="icon-name">go-next-symbolic</property>
+										<property name="pixel-size">16</property>
+										<style>
+											<class name="dim-label"/>
+										</style>
+									</object>
+								</child>
+							</object>
+						</child>
+						<style>
+							<class name="flat"/>
+						</style>
 					</object>
 				</child>
 			</object>
