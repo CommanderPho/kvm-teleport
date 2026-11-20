@@ -1,9 +1,9 @@
 name: release-flatpak
 
-# Build the Flatpak bundle on every published Release and attach it as
-# a Release asset. Split from release.yml so a Flatpak failure doesn't
-# sink the platform builds, and so workflow_dispatch can validate a
-# manifest change against an arbitrary ref without cutting a release.
+# Build the Flatpak bundle for a Release tag and attach it as a Release
+# asset. Manual only (workflow_dispatch). Split from release.yml so a
+# Flatpak failure doesn't sink the platform builds, and so the optional
+# `ref` input can validate a manifest change without cutting a release.
 #
 # The build container's runtime (gnome-XX / freedesktop-XX) must match
 # the manifest's declared runtime, so it comes from the per-repo
@@ -16,8 +16,6 @@ name: release-flatpak
 # copies.
 
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
@@ -50,18 +48,13 @@ jobs:
       - name: Resolve target tag
         id: tag
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG="${{ inputs.tag }}"
-          else
-            TAG="${{ github.event.release.tag_name }}"
-          fi
+          TAG="${{ inputs.tag }}"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "Building Flatpak for $TAG"
 
       - name: Checkout source
-        # Falls through to the tag on release events (where inputs.ref
-        # is empty) and on dispatches that leave `ref` blank. Only an
-        # explicit override changes the source.
+        # Defaults to the tag when `ref` is blank. Only an explicit
+        # override changes the source.
         uses: actions/checkout@v6
         with:
           ref: ${{ inputs.ref || steps.tag.outputs.tag }}

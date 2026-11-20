@@ -10,28 +10,16 @@ name: workflow-drift-check
 # against the local copy; any difference fails the run.
 #
 # It is NOT a per-PR gate: a PR check would red-flag the first repo of
-# a deliberate cohort-wide update. It runs post-merge (push to main)
-# for prompt detection, on a daily schedule as a backstop for drift
-# from direct pushes, and on demand. While you roll a shared-workflow
-# change through every repo, expect this to be red until the last one
-# lands — that transient is the cost of vendoring over centralizing.
+# a deliberate cohort-wide update. Manual only — run from the Actions
+# tab (workflow_dispatch) when you want to compare shared workflows
+# against the cohort. While you roll a shared-workflow change through
+# every repo, expect this to be red until the last one lands — that
+# transient is the cost of vendoring over centralizing.
 #
 # SHARED WORKFLOW — this file is itself byte-identical across the
 # cohort and is included in the set it checks.
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - '.github/workflows/aur-publish.yml'
-      - '.github/workflows/release-flatpak.yml'
-      - '.github/workflows/release-update-metainfo.yml'
-      - '.github/workflows/release-update-site.yml'
-      - '.github/workflows/workflow-drift-check.yml'
-  schedule:
-    # Daily 07:17 UTC — backstop for drift introduced by a direct push
-    # that the path-filtered push trigger above somehow missed.
-    - cron: '17 7 * * *'
   workflow_dispatch:
 
 permissions:

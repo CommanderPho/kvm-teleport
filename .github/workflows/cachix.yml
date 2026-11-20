@@ -1,10 +1,7 @@
 name: Nix Binary Cache
 
+# Manual only — run from the Actions tab (workflow_dispatch).
 on:
-  push:
-    branches: ["main"]
-  pull_request:
-    branches: ["main"]
   workflow_dispatch:
 
 concurrency:

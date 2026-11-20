@@ -243,9 +243,7 @@ impl Window {
                             move |row: ClientRow, active: bool| {
                                 if let Some(client) = window.client_by_idx(row.index() as u32) {
                                     if active && !window.client_may_activate(&client) {
-                                        window.show_toast(
-                                            "Use Setup Layout to place this peer first",
-                                        );
+                                        window.show_toast("Use Layout to place this peer first");
                                         row.set_active(false);
                                         return;
                                     }
@@ -296,9 +294,16 @@ impl Window {
                             #[strong]
                             window,
                             move |row: ClientRow| {
-                                if let Some(client) = window.client_by_idx(row.index() as u32) {
-                                    window.begin_setup_layout(&client);
-                                }
+                                // Leave the button/ActionRow click trampoline before
+                                // toasts, IPC, or presenting the layout dialog —
+                                // synchronous work here has aborted on Windows GTK.
+                                let idx = row.index() as u32;
+                                let window = window.clone();
+                                glib::idle_add_local_once(move || {
+                                    if let Some(client) = window.client_by_idx(idx) {
+                                        window.begin_setup_layout(&client);
+                                    }
+                                });
                             }
                         ),
                     );
@@ -584,7 +589,7 @@ impl Window {
     fn begin_setup_layout(&self, client: &ClientObject) {
         let hostname: Option<String> = client.property("hostname");
         let Some(hostname) = hostname.filter(|h| !h.is_empty()) else {
-            self.show_toast("Set a hostname before Setup Layout");
+            self.show_toast("Set a hostname before opening Layout");
             return;
         };
 
@@ -660,10 +665,16 @@ impl Window {
     }
 
     fn finish_setup_layout_open(&self, fingerprint: String) {
-        if self.imp().pending_setup_open.borrow().as_deref() != Some(fingerprint.as_str()) {
-            return;
+        // Take under a short borrow_mut so callers that still hold a
+        // temporary `Ref` from an `if let ... borrow()` cannot race us,
+        // and so this function never stacks borrow()+replace().
+        {
+            let mut pending = self.imp().pending_setup_open.borrow_mut();
+            match pending.as_deref() {
+                Some(fp) if fp == fingerprint => *pending = None,
+                _ => return,
+            }
         }
-        self.imp().pending_setup_open.replace(None);
         // Bump generation so the connect timeout no longer fires.
         let generation = self.imp().pending_setup_generation.get().wrapping_add(1);
         self.imp().pending_setup_generation.set(generation);
@@ -677,9 +688,9 @@ impl Window {
             if window.imp().pending_setup_generation.get() != generation {
                 return;
             }
-            if window.imp().pending_setup_handle.get().is_none()
-                && window.imp().pending_setup_open.borrow().is_none()
-            {
+            let still_waiting = window.imp().pending_setup_handle.get().is_some()
+                || window.imp().pending_setup_open.borrow().is_some();
+            if !still_waiting {
                 return;
             }
             window.imp().pending_setup_handle.set(None);
@@ -689,7 +700,7 @@ impl Window {
                  identity; see the Mousehop log file for dial/DNS details"
             );
             window.show_toast(
-                "Could not connect or identify peer for Setup Layout — see Mousehop log for details",
+                "Could not connect or identify peer for Layout — see Mousehop log for details",
             );
         });
     }
@@ -955,13 +966,19 @@ impl Window {
         self.imp().workspace_revision.set(ws.revision);
         *self.imp().workspace.borrow_mut() = ws.clone();
         self.update_shared_layout_sensitivity();
-        if let Some(fp) = self.imp().pending_setup_open.borrow().clone() {
+        // Clone out of the RefCell before calling in: `if let` keeps
+        // scrutinee temporaries alive for the whole body, so
+        // `borrow().clone()` inside the `if let` would still hold a `Ref`
+        // across `finish_setup_layout_open` → `replace` and panic.
+        let pending_setup_open = self.imp().pending_setup_open.borrow().clone();
+        if let Some(fp) = pending_setup_open {
             self.finish_setup_layout_open(fp);
         }
         if let Some(selection) = self.imp().pending_editor_open.borrow_mut().take() {
             self.open_workspace_editor(selection);
         }
-        if let Some(hook) = self.imp().workspace_editor_hook.borrow().clone() {
+        let editor_hook = self.imp().workspace_editor_hook.borrow().clone();
+        if let Some(hook) = editor_hook {
             hook(ws);
         }
     }
@@ -974,30 +991,36 @@ impl Window {
 
     pub(super) fn open_workspace_editor(&self, initial_selected: Option<String>) {
         let ws = self.imp().workspace.borrow().clone();
-        let window = self.clone();
-        let request = Rc::new(move |req: FrontendRequest| {
-            window.request(req);
-        }) as Rc<dyn Fn(FrontendRequest)>;
-        let window = self.clone();
-        let register_live = Rc::new(move |hook: Option<Rc<dyn Fn(WorkspaceIpc)>>| {
-            *window.imp().workspace_editor_hook.borrow_mut() = hook;
-        }) as Rc<dyn Fn(Option<Rc<dyn Fn(WorkspaceIpc)>>)>;
-        let window = self.clone();
-        let register_error = Rc::new(move |hook: Option<Rc<dyn Fn(String)>>| {
-            *window.imp().workspace_editor_error_hook.borrow_mut() = hook;
-        }) as Rc<dyn Fn(Option<Rc<dyn Fn(String)>>)>;
-        crate::workspace_editor::present_workspace_editor(
-            self,
-            request,
-            ws,
-            register_live,
-            register_error,
-            initial_selected,
-        );
+        let parent = self.clone();
+        // Present on idle so we never nest a modal AdwWindow inside an
+        // in-flight list-row / IPC callback (Windows GTK has aborted here).
+        glib::idle_add_local_once(move || {
+            let window = parent.clone();
+            let request = Rc::new(move |req: FrontendRequest| {
+                window.request(req);
+            }) as Rc<dyn Fn(FrontendRequest)>;
+            let window = parent.clone();
+            let register_live = Rc::new(move |hook: Option<Rc<dyn Fn(WorkspaceIpc)>>| {
+                *window.imp().workspace_editor_hook.borrow_mut() = hook;
+            }) as Rc<dyn Fn(Option<Rc<dyn Fn(WorkspaceIpc)>>)>;
+            let window = parent.clone();
+            let register_error = Rc::new(move |hook: Option<Rc<dyn Fn(String)>>| {
+                *window.imp().workspace_editor_error_hook.borrow_mut() = hook;
+            }) as Rc<dyn Fn(Option<Rc<dyn Fn(String)>>)>;
+            crate::workspace_editor::present_workspace_editor(
+                &parent,
+                request,
+                ws,
+                register_live,
+                register_error,
+                initial_selected,
+            );
+        });
     }
 
     pub(super) fn notify_workspace_validation_error(&self, msg: String) {
-        if let Some(hook) = self.imp().workspace_editor_error_hook.borrow().clone() {
+        let error_hook = self.imp().workspace_editor_error_hook.borrow().clone();
+        if let Some(hook) = error_hook {
             hook(msg);
         } else {
             self.show_toast(msg.as_str());

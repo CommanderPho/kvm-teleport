@@ -1,16 +1,16 @@
 name: "Release"
-run-name: "Release - ${{ github.event.release.tag_name || inputs.tag }}"
+run-name: "Release - ${{ inputs.tag }}"
 
-# release-plz creates the GitHub Release; this workflow then builds the
-# platform binaries + Flatpak bundle and attaches them to it.
+# Manual only — run from the Actions tab after a GitHub Release exists
+# (e.g. after dispatching release-plz). Builds platform binaries and
+# attaches them to the given tag. Flatpak is a separate workflow.
 on:
-  release:
-    types: [published]
   workflow_dispatch:
     inputs:
       tag:
         description: 'Existing release tag to (re)build binaries for'
         required: true
+        type: string
 
 env:
   CARGO_TERM_COLOR: always
@@ -41,7 +41,7 @@ jobs:
       # and NOTICE so the mousehop-bin AUR PKGBUILD (and other distro
       # packagers) can install everything from one tarball.
       run: |
-        TAG="${{ github.event.release.tag_name || inputs.tag }}"
+        TAG="${{ inputs.tag }}"
         ver="${TAG#v}"
         stage="mousehop-${ver}-x86_64"
         mkdir "$stage"
@@ -54,7 +54,7 @@ jobs:
     - name: Attach tarball to the release
       env:
         GH_TOKEN: ${{ github.token }}
-        TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        TAG: ${{ inputs.tag }}
       run: gh release upload "$TAG" mousehop-*-x86_64.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
 
   linux-arm64-release-build:
@@ -71,7 +71,7 @@ jobs:
       run: cargo build --release
     - name: Stage tarball contents
       run: |
-        TAG="${{ github.event.release.tag_name || inputs.tag }}"
+        TAG="${{ inputs.tag }}"
         ver="${TAG#v}"
         stage="mousehop-${ver}-aarch64"
         mkdir "$stage"
@@ -84,7 +84,7 @@ jobs:
     - name: Attach tarball to the release
       env:
         GH_TOKEN: ${{ github.token }}
-        TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        TAG: ${{ inputs.tag }}
       run: gh release upload "$TAG" mousehop-*-aarch64.tar.gz --clobber --repo "$GITHUB_REPOSITORY"
 
   windows-release-build:
@@ -168,7 +168,7 @@ jobs:
     - name: Attach archive to the release
       env:
         GH_TOKEN: ${{ github.token }}
-        TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        TAG: ${{ inputs.tag }}
       run: gh release upload "$env:TAG" mousehop-windows-x86_64.zip --clobber --repo "$env:GITHUB_REPOSITORY"
 
   macos-release-build:
@@ -237,7 +237,7 @@ jobs:
     - name: Attach DMG to the release
       env:
         GH_TOKEN: ${{ github.token }}
-        TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        TAG: ${{ inputs.tag }}
       run: gh release upload "$TAG" target/release/bundle/osx/mousehop-macos-intel.dmg --clobber --repo "$GITHUB_REPOSITORY"
 
   macos-arm64-release-build:
@@ -306,11 +306,10 @@ jobs:
     - name: Attach DMG to the release
       env:
         GH_TOKEN: ${{ github.token }}
-        TAG: ${{ github.event.release.tag_name || inputs.tag }}
+        TAG: ${{ inputs.tag }}
       run: gh release upload "$TAG" target/release/bundle/osx/mousehop-macos-arm64.dmg --clobber --repo "$GITHUB_REPOSITORY"
 
-  # Flatpak bundle build + upload now lives in release-flatpak.yml,
-  # gated on the same `release: published` trigger. The split lets a
-  # Flatpak failure run independently of the macOS signing chain,
-  # and exposes a workflow_dispatch `ref` input so a manifest
-  # change can be validated against HEAD without cutting a release.
+  # Flatpak bundle build + upload now lives in release-flatpak.yml
+  # (also manual). The split lets a Flatpak failure run independently
+  # of the macOS signing chain, and that workflow's `ref` input can
+  # validate a manifest change against HEAD without cutting a release.
