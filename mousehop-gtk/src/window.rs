@@ -665,10 +665,16 @@ impl Window {
     }
 
     fn finish_setup_layout_open(&self, fingerprint: String) {
-        if self.imp().pending_setup_open.borrow().as_deref() != Some(fingerprint.as_str()) {
-            return;
+        // Take under a short borrow_mut so callers that still hold a
+        // temporary `Ref` from an `if let ... borrow()` cannot race us,
+        // and so this function never stacks borrow()+replace().
+        {
+            let mut pending = self.imp().pending_setup_open.borrow_mut();
+            match pending.as_deref() {
+                Some(fp) if fp == fingerprint => *pending = None,
+                _ => return,
+            }
         }
-        self.imp().pending_setup_open.replace(None);
         // Bump generation so the connect timeout no longer fires.
         let generation = self.imp().pending_setup_generation.get().wrapping_add(1);
         self.imp().pending_setup_generation.set(generation);
@@ -682,9 +688,9 @@ impl Window {
             if window.imp().pending_setup_generation.get() != generation {
                 return;
             }
-            if window.imp().pending_setup_handle.get().is_none()
-                && window.imp().pending_setup_open.borrow().is_none()
-            {
+            let still_waiting = window.imp().pending_setup_handle.get().is_some()
+                || window.imp().pending_setup_open.borrow().is_some();
+            if !still_waiting {
                 return;
             }
             window.imp().pending_setup_handle.set(None);
@@ -960,13 +966,19 @@ impl Window {
         self.imp().workspace_revision.set(ws.revision);
         *self.imp().workspace.borrow_mut() = ws.clone();
         self.update_shared_layout_sensitivity();
-        if let Some(fp) = self.imp().pending_setup_open.borrow().clone() {
+        // Clone out of the RefCell before calling in: `if let` keeps
+        // scrutinee temporaries alive for the whole body, so
+        // `borrow().clone()` inside the `if let` would still hold a `Ref`
+        // across `finish_setup_layout_open` → `replace` and panic.
+        let pending_setup_open = self.imp().pending_setup_open.borrow().clone();
+        if let Some(fp) = pending_setup_open {
             self.finish_setup_layout_open(fp);
         }
         if let Some(selection) = self.imp().pending_editor_open.borrow_mut().take() {
             self.open_workspace_editor(selection);
         }
-        if let Some(hook) = self.imp().workspace_editor_hook.borrow().clone() {
+        let editor_hook = self.imp().workspace_editor_hook.borrow().clone();
+        if let Some(hook) = editor_hook {
             hook(ws);
         }
     }
@@ -1007,7 +1019,8 @@ impl Window {
     }
 
     pub(super) fn notify_workspace_validation_error(&self, msg: String) {
-        if let Some(hook) = self.imp().workspace_editor_error_hook.borrow().clone() {
+        let error_hook = self.imp().workspace_editor_error_hook.borrow().clone();
+        if let Some(hook) = error_hook {
             hook(msg);
         } else {
             self.show_toast(msg.as_str());

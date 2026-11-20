@@ -206,7 +206,7 @@
 				{
 					"name": "Run Exe",
 					"color": "#7FDBFF",
-					"tooltip": "Launch mousehop from its final release path in the background",
+					"tooltip": "Launch mousehop and show live runtime logs in the terminal",
 					"useVsCodeApi": true,
 					"command": "workbench.action.tasks.runTask",
 					"args": ["Launch mousehop (current platform)"]
@@ -328,9 +328,9 @@
 			{
 				"label": "Launch mousehop (current platform)",
 				"type": "shell",
-				"command": "test -x target/release/mousehop && (nohup target/release/mousehop >/dev/null 2>&1 &)",
+				"command": "log_dir=\"${XDG_STATE_HOME:-$HOME/.local/state}/mousehop\"; mkdir -p \"$log_dir\"; touch \"$log_dir/mousehop-gui.log\" \"$log_dir/mousehop-daemon.log\" \"$log_dir/panic.log\"; test -x target/release/mousehop || { echo \"missing target/release/mousehop - build first\" >&2; exit 1; }; export MOUSEHOP_LOG_LEVEL=debug RUST_BACKTRACE=1; nohup target/release/mousehop >/dev/null 2>&1 & echo \"launched pid $!; crashes go to panic.log\"; tail -n 40 -F \"$log_dir/panic.log\" \"$log_dir/mousehop-gui.log\" \"$log_dir/mousehop-daemon.log\"",
 				"windows": {
-					"command": "Start-Process -FilePath '${workspaceFolder}\\target\\release\\mousehop-windows\\mousehop.exe' -WorkingDirectory '${workspaceFolder}\\target\\release\\mousehop-windows'",
+					"command": "$ErrorActionPreference='Stop'; $exe='${workspaceFolder}\\target\\release\\mousehop-windows\\mousehop.exe'; $wd='${workspaceFolder}\\target\\release\\mousehop-windows'; if (-not (Test-Path -LiteralPath $exe)) { Write-Error \"missing $exe - build first\"; exit 1 }; $logDir=Join-Path $env:LOCALAPPDATA 'Mousehop\\logs'; New-Item -ItemType Directory -Force -Path $logDir | Out-Null; $panic=Join-Path $logDir 'panic.log'; $gui=Join-Path $logDir 'mousehop-gui.log'; $daemon=Join-Path $logDir 'mousehop-daemon.log'; foreach ($f in @($panic,$gui,$daemon)) { if (-not (Test-Path -LiteralPath $f)) { New-Item -ItemType File -Path $f | Out-Null } }; $env:MOUSEHOP_LOG_LEVEL='debug'; $env:RUST_BACKTRACE='1'; Write-Host Launching $exe; Write-Host 'Crashes are written to panic.log - reproduce the crash and watch for a panic frame below.'; Start-Process -FilePath $exe -WorkingDirectory $wd; Get-Content -LiteralPath $panic,$gui,$daemon -Wait -Tail 40",
 					"options": {
 						"cwd": "${workspaceFolder}",
 						"shell": {
@@ -343,7 +343,7 @@
 					}
 				},
 				"osx": {
-					"command": "open \"${workspaceFolder}/MousehopDev.app\"",
+					"command": "log_dir=\"$HOME/Library/Logs/Mousehop\"; mkdir -p \"$log_dir\"; touch \"$log_dir/mousehop-gui.log\" \"$log_dir/mousehop-daemon.log\" \"$log_dir/panic.log\"; export MOUSEHOP_LOG_LEVEL=debug RUST_BACKTRACE=1; open \"${workspaceFolder}/MousehopDev.app\"; echo \"launched MousehopDev.app; crashes go to panic.log\"; tail -n 40 -F \"$log_dir/panic.log\" \"$log_dir/mousehop-gui.log\" \"$log_dir/mousehop-daemon.log\"",
 					"options": {
 						"cwd": "${workspaceFolder}"
 					}
@@ -353,12 +353,14 @@
 				},
 				"problemMatcher": [],
 				"presentation": {
-					"reveal": "silent",
-					"panel": "shared",
-					"focus": false,
-					"close": true
+					"reveal": "always",
+					"panel": "dedicated",
+					"focus": true,
+					"close": false,
+					"showReuseMessage": false,
+					"clear": false
 				},
-				"detail": "Background launch from final path: Windows mousehop-windows\\mousehop.exe, macOS MousehopDev.app, else target/release/mousehop"
+				"detail": "Launch from final path with debug logging; live-tail panic.log + gui/daemon logs (crashes are written to panic.log)"
 			},
 			{
 				"label": "Build mousehop (debug)",
