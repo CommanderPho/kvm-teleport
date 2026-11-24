@@ -619,6 +619,27 @@ impl RoutingSnapshot {
         self.routes.iter().filter(move |r| r.src_peer == src_peer)
     }
 
+    /// Dominant exit edge from `src_peer` toward `dst_peer`.
+    ///
+    /// When several adjacencies exist (e.g. L-shaped multi-monitor contact),
+    /// picks the route with the longest source interval so legacy Position
+    /// barriers stay aligned with the primary canvas edge.
+    pub fn dominant_exit_edge(&self, src_peer: &str, dst_peer: &str) -> Option<DisplayEdge> {
+        let mut best: Option<(&RouteInterval, i32)> = None;
+        for route in self
+            .routes
+            .iter()
+            .filter(|r| r.src_peer == src_peer && r.dst_peer == dst_peer)
+        {
+            let len = (route.src_end - route.src_start).abs();
+            match best {
+                Some((_, best_len)) if len <= best_len => {}
+                _ => best = Some((route, len)),
+            }
+        }
+        best.map(|(r, _)| r.src_edge)
+    }
+
     /// Looks up a landing for an outbound crossing at `workspace_point`.
     pub fn lookup(
         &self,
@@ -896,6 +917,8 @@ mod tests {
         assert_eq!(landing.dst_display, id("b1"));
         assert_eq!(landing.local_position.0, LANDING_INSET);
         assert_eq!(landing.local_position.1, 540);
+        assert_eq!(snap.dominant_exit_edge("A", "B"), Some(DisplayEdge::Right));
+        assert_eq!(snap.dominant_exit_edge("B", "A"), Some(DisplayEdge::Left));
 
         let ws_v = workspace(vec![("A", 0, 0), ("B", 0, 1080)]);
         let snap_v = derive_routes(&ws_v, &topologies(vec![("A", a), ("B", b)])).unwrap();
@@ -904,6 +927,28 @@ mod tests {
             .expect("vertical crossing");
         assert_eq!(landing_v.dst_peer, "B");
         assert_eq!(landing_v.local_position.1, LANDING_INSET);
+        assert_eq!(
+            snap_v.dominant_exit_edge("A", "B"),
+            Some(DisplayEdge::Bottom)
+        );
+    }
+
+    /// Regression: host with peer placed to the right must report Right as
+    /// the dominant exit edge (legacy Position sync for Layout Apply).
+    #[test]
+    fn dominant_exit_edge_peer_on_right() {
+        let host = topo(vec![display("h0", 0, 0, 3840, 2160)]);
+        let mac = topo(vec![display("m0", 0, 0, 1512, 982)]);
+        let ws = workspace(vec![("HOST", 0, 0), ("MAC", 3840, 200)]);
+        let snap = derive_routes(&ws, &topologies(vec![("HOST", host), ("MAC", mac)])).unwrap();
+        assert_eq!(
+            snap.dominant_exit_edge("HOST", "MAC"),
+            Some(DisplayEdge::Right)
+        );
+        assert_eq!(
+            snap.dominant_exit_edge("MAC", "HOST"),
+            Some(DisplayEdge::Left)
+        );
     }
 
     /// 2. Laptop adjacent to only the middle portion of a larger monitor.

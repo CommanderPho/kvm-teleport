@@ -304,6 +304,11 @@ impl WorkspaceState {
 
     /// Ingest one chunk from an authenticated peer. Returns `Some(revision)` when
     /// a full snapshot was accepted and persisted.
+    ///
+    /// When `allow_replace_self_authority` is set and this device is currently
+    /// its own authority (typical after a local Apply on a machine that never
+    /// dials peers), accept a first remote publish that replaces self as
+    /// authority so the controller's Layout can land on the follower.
     pub fn ingest_chunk(
         &mut self,
         publisher_fingerprint: &str,
@@ -311,6 +316,7 @@ impl WorkspaceState {
         index: u8,
         count: u8,
         data: Vec<u8>,
+        allow_replace_self_authority: bool,
     ) -> Result<Option<u64>, WorkspaceStateError> {
         let expected_authority = self
             .config
@@ -324,9 +330,19 @@ impl WorkspaceState {
                 .as_ref()
                 .is_some_and(|c| c.authority_fingerprint != publisher_fingerprint)
         {
-            return Err(WorkspaceStateError::Unauthorized(
-                publisher_fingerprint.to_string(),
-            ));
+            let self_authority_takeover = allow_replace_self_authority
+                && self.is_authority()
+                && expected_authority == self.local_fingerprint;
+            if self_authority_takeover {
+                log::info!(
+                    "accepting workspace authority takeover from {publisher_fingerprint} \
+                     (was self-authority)"
+                );
+            } else {
+                return Err(WorkspaceStateError::Unauthorized(
+                    publisher_fingerprint.to_string(),
+                ));
+            }
         }
         if let Some(current) = &self.config {
             if revision < current.revision {
@@ -462,7 +478,7 @@ mod tests {
                     data,
                 } => {
                     let err = state
-                        .ingest_chunk("evil", revision, index, count, data)
+                        .ingest_chunk("evil", revision, index, count, data, false)
                         .unwrap_err();
                     assert!(matches!(err, WorkspaceStateError::Unauthorized(_)));
                 }
@@ -520,7 +536,7 @@ mod tests {
                     data,
                 } => {
                     accepted = follower
-                        .ingest_chunk("auth", revision, index, count, data)
+                        .ingest_chunk("auth", revision, index, count, data, false)
                         .unwrap();
                 }
                 _ => panic!("chunk"),
@@ -554,13 +570,86 @@ mod tests {
             })
             .unwrap();
         let err = state
-            .ingest_chunk("auth", 4, 0, 1, vec![1, 2, 3])
+            .ingest_chunk("auth", 4, 0, 1, vec![1, 2, 3], false)
             .unwrap_err();
         assert!(matches!(
             err,
             WorkspaceStateError::StaleRevision { got: 4, have: 5 }
         ));
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn self_authority_takeover_accepted_when_allowed() {
+        let peer_dir = temp_workspace_dir("takeover-peer");
+        let mut peer = WorkspaceState::new(&peer_dir, "peer".into());
+        peer.set_topology("peer".into(), topo_one("b", 1000, 1000))
+            .unwrap();
+        peer.set_topology("auth".into(), topo_one("a", 1000, 1000))
+            .unwrap();
+        // Peer previously Applied locally and is self-authority.
+        peer.apply_local(WorkspaceConfig {
+            workspace_id: "ws".into(),
+            revision: 1,
+            authority_fingerprint: "peer".into(),
+            placements: vec![DevicePlacement {
+                peer_fingerprint: "peer".into(),
+                origin_in_workspace: (0, 0),
+            }],
+        })
+        .unwrap();
+        assert!(peer.is_authority());
+
+        let auth_dir = temp_workspace_dir("takeover-auth");
+        let mut authority = WorkspaceState::new(&auth_dir, "auth".into());
+        authority
+            .set_topology("auth".into(), topo_one("a", 1000, 1000))
+            .unwrap();
+        authority
+            .set_topology("peer".into(), topo_one("b", 1000, 1000))
+            .unwrap();
+        authority
+            .apply_local(WorkspaceConfig {
+                workspace_id: "ws".into(),
+                revision: 3,
+                authority_fingerprint: "auth".into(),
+                placements: vec![
+                    DevicePlacement {
+                        peer_fingerprint: "auth".into(),
+                        origin_in_workspace: (0, 0),
+                    },
+                    DevicePlacement {
+                        peer_fingerprint: "peer".into(),
+                        origin_in_workspace: (1000, 0),
+                    },
+                ],
+            })
+            .unwrap();
+        let chunks = authority.publish_chunks().unwrap();
+        let mut accepted = None;
+        for chunk in chunks {
+            match chunk {
+                ProtoEvent::WorkspaceChunk {
+                    revision,
+                    index,
+                    count,
+                    data,
+                } => {
+                    accepted = peer
+                        .ingest_chunk("auth", revision, index, count, data, true)
+                        .unwrap();
+                }
+                _ => panic!("chunk"),
+            }
+        }
+        assert_eq!(accepted, Some(3));
+        assert!(!peer.is_authority());
+        assert_eq!(
+            peer.config().unwrap().authority_fingerprint.as_str(),
+            "auth"
+        );
+        let _ = fs::remove_dir_all(peer_dir);
+        let _ = fs::remove_dir_all(auth_dir);
     }
 
     #[test]

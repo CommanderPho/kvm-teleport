@@ -615,8 +615,9 @@ placement uses **Layout** on an outgoing client row (connects the peer,
 then opens the planner with that peer selected). **Shared layout…** (header and
 About → build) edits an already-applied workspace only. Authority drags host
 groups (not individual monitors); followers are view-only. The outgoing
-Position combo is removed from the GUI; legacy `position` in config remains for
-IPC and barrier seeding. Peers without the shared-workspace capability keep the
+Position combo is removed from the GUI; Apply Layout syncs each client’s
+legacy `position` in `config.toml` to the canvas adjacency edge so capture
+barriers match the planner. Peers without the shared-workspace capability keep the
 four-edge `position` model above. Manual Win/macOS checks:
 [docs/manual-spatial-checklist.md](docs/manual-spatial-checklist.md).
 

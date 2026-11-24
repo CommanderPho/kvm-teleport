@@ -1119,6 +1119,15 @@ impl CaptureTask {
         // cross-platform — every backend benefits.
         capture.set_release_threshold(*self.release_threshold_px.borrow());
 
+        // Arm spatial routes from any snapshot that arrived while capture
+        // was idle (SetSpatialRouting only stores then). Without this,
+        // Apply-then-Enable leaves process-wide armed routes empty and
+        // Windows falls back to legacy Position-only barriers.
+        if let Err(e) = self.arm_spatial_routes(&mut capture).await {
+            capture.terminate().await?;
+            return Err(e);
+        }
+
         let r = self.do_capture_session(&mut capture).await;
 
         // Any backend/session exit ends the remote-control interval,

@@ -2,6 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet};
 use std::ops::BitOrAssign;
 use std::ptr::addr_of_mut;
+use std::time::{Duration, Instant};
 
 use std::default::Default;
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -144,6 +145,8 @@ fn try_send_event(
 thread_local! {
     /// all configured clients
     static CLIENTS: RefCell<HashSet<Position>> = RefCell::new(HashSet::new());
+    /// Rate-limit for "barrier Position has no client" warnings.
+    static BARRIER_MISMATCH_WARN_AT: Cell<Option<Instant>> = const { Cell::new(None) };
     /// currently active client
     static ACTIVE_CLIENT: Cell<Option<Position>> = const { Cell::new(None) };
     /// input event channel
@@ -445,6 +448,20 @@ fn check_client_activation(wparam: WPARAM, lparam: LPARAM) -> bool {
 
     /* check if a client is registered for the barrier */
     if !CLIENTS.with_borrow(|clients| clients.contains(&pos)) {
+        // Spatial arming can report Right/Top/... while the client is still
+        // registered at a stale Position — crossing then does nothing.
+        let now = Instant::now();
+        let should_warn = BARRIER_MISMATCH_WARN_AT
+            .get()
+            .is_none_or(|t| now.saturating_duration_since(t) >= Duration::from_secs(5));
+        if should_warn {
+            BARRIER_MISMATCH_WARN_AT.set(Some(now));
+            let registered: Vec<_> = CLIENTS.with_borrow(|c| c.iter().copied().collect());
+            log::warn!(
+                "barrier {pos:?} crossed but no client registered there \
+                 (registered={registered:?}); check Layout vs Position sync"
+            );
+        }
         return ret;
     }
 

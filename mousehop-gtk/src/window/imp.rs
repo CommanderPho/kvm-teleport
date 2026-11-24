@@ -347,9 +347,8 @@ impl ObjectImpl for Window {
             obj,
             move |_| {
                 if !super::workspace_is_applied(&window.imp().workspace.borrow()) {
-                    window.show_toast(
-                        "Apply a shared layout first, or use Layout on a client row.",
-                    );
+                    window
+                        .show_toast("Apply a shared layout first, or use Layout on a client row.");
                     return;
                 }
                 window.request_open_workspace_editor(None);
